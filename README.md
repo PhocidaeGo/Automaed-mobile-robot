@@ -48,9 +48,13 @@ colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
    cd autonomous-exploration-with-lio-sam
    source install/setup.sh
    ros2 launch vehicle_simulator system_garage.launch
+   ros2 launch vehicle_simulator system_test.launch
    ```
-
-   Now you should see gazebo simulation and autonomy_basic visualized in RViz. This repo only contains the garage environment.
+   Or launch a different world:
+   ```bash
+   ros2 launch vehicle_simulator system_test.launch
+   ```
+   Now you should see gazebo simulation and autonomy_basic visualized in RViz.
 
 2. **Launch LIO-SAM**:
 
