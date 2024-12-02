@@ -47,12 +47,11 @@ colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
    ```bash
    cd autonomous-exploration-with-lio-sam
    source install/setup.sh
-   ros2 launch vehicle_simulator system_garage.launch
    ros2 launch vehicle_simulator system_test.launch
    ```
    Or launch a different world:
    ```bash
-   ros2 launch vehicle_simulator system_test.launch
+   ros2 launch vehicle_simulator system_garage.launch
    ```
    Now you should see gazebo simulation and autonomy_basic visualized in RViz.
 
@@ -69,7 +68,35 @@ colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
 
    ```bash
    cd tare_planner
-   source devel/setup.sh
-   roslaunch tare_planner explore_garage.launch
+   source install/setup.sh
+   ros2 launch tare_planner explore_garage.launch
    ```
    Now you should see autonomous exploration in action.
+
+4. **Launch Map Processor**:
+
+   ```bash
+   source install/setup.bash
+   ros2 run lidar_map_processor lidar_map_processor
+   ```
+   Check if all the walls and ceiling are correctly segmented
+
+
+## Others
+
+The autonomy basic publish way points information to the /way_point topic.
+Example:
+ros2 topic echo /way_point
+header:
+  stamp:
+    sec: 1733154718
+    nanosec: 612243577
+  frame_id: map
+point:
+  x: 3.597280263900757
+  y: 2.663806438446045
+  z: 0.7960537672042847
+---
+
+To visulaize the .pcd file, you can use the online viewer:
+https://imagetostl.com/view-pcd-online#convert
