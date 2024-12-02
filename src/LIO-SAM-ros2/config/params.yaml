@@ -15,8 +15,8 @@
 
     # Sensor Synchronization
     #timeSync: true                                  # Enable approximate time synchronization
-    #imuDelay: 0.0                              # Adjust for IMU being ahead of clock by 30-90 ms
-    #lidarDelay: 0.0                             # Adjust for LiDAR being behind clock by 2 ms
+    #imuDelay: 0.0                              
+    #lidarDelay: 0.0                             
                             
     # GPS Settings
     useImuHeadingInitialization: false           # if using GPS data, set to "true"

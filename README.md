@@ -84,19 +84,10 @@ colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
 
 ## Others
 
-The autonomy basic publish way points information to the /way_point topic.
-Example:
-ros2 topic echo /way_point
-header:
-  stamp:
-    sec: 1733154718
-    nanosec: 612243577
-  frame_id: map
-point:
-  x: 3.597280263900757
-  y: 2.663806438446045
-  z: 0.7960537672042847
----
+1. The autonomy basic publish way points information to the /way_point topic.
+   ```bash
+   ros2 topic echo /way_point
+   ```
 
-To visulaize the .pcd file, you can use the online viewer:
+2. To visulaize the .pcd file, you can use the online viewer:
 https://imagetostl.com/view-pcd-online#convert
