@@ -2,4 +2,5 @@ build/
 *.txt
 install/
 log/
+.vscode
 

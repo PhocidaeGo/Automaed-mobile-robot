@@ -11,6 +11,50 @@
 #include <pcl/visualization/pcl_visualizer.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <sensor_msgs/msg/point_cloud2.hpp>
+#include <vector>
+#include <algorithm> // For sorting
+#include <cmath>
+#include <thread> // For delay in visualization
+
+struct Waypoint {
+    float x;
+    float y;
+    float z;
+};
+
+// Function to generate waypoints for a detected plane
+void generateWaypointsForPlane(const pcl::PointCloud<pcl::PointXYZ>::Ptr &plane_cloud,
+                               std::vector<Waypoint> &waypoints) {
+    float min_x = std::numeric_limits<float>::max();
+    float max_x = std::numeric_limits<float>::lowest();
+    float min_y = std::numeric_limits<float>::max();
+    float max_y = std::numeric_limits<float>::lowest();
+
+    for (const auto &point : plane_cloud->points) {
+        min_x = std::min(min_x, point.x);
+        max_x = std::max(max_x, point.x);
+        min_y = std::min(min_y, point.y);
+        max_y = std::max(max_y, point.y);
+    }
+
+    float wall_distance = 0.2; // Default distance from the wall
+    waypoints.push_back({min_x - wall_distance, min_y, 0.0});
+    waypoints.push_back({(min_x + max_x) / 2 - wall_distance, (min_y + max_y) / 2, 0.0});
+    waypoints.push_back({max_x - wall_distance, max_y, 0.0});
+}
+
+// Function to visualize waypoints in the PCL visualizer
+void visualizeWaypoints(pcl::visualization::PCLVisualizer::Ptr &viewer, 
+                        const std::vector<Waypoint> &waypoints) {
+    int waypoint_id = 0;
+    for (const auto &wp : waypoints) {
+        std::string point_id = "waypoint_" + std::to_string(waypoint_id);
+        viewer->addSphere<pcl::PointXYZ>(pcl::PointXYZ(wp.x, wp.y, wp.z), 0.05, 0.0, 0.0, 1.0, point_id);
+        //viewer->spinOnce(1000); // Show each waypoint for 1 second
+        waypoint_id++;
+    }
+}
+
 
 class LidarMapProcessor : public rclcpp::Node {
 public:
@@ -18,128 +62,23 @@ public:
         RCLCPP_INFO(this->get_logger(), "Starting Lidar Map Processor Node...");
         processPointCloud();
     }
+    
 
 private:
     void processPointCloud() {
+        //double area_threshold = 10; // Area threshold in square meters
+        double ignore_threshold = 0.001; // The value determines how many points of the whole cloud will be ignored
+        double distance_threshold = 0.01;
 
-      //double area_threshold = 10; // Area threshold in square meters
-      double ignore_threshold = 0.001; // The value determines how many points of the whole cloud will be ignored
-      double distance_threshold = 0.01;
-      // Load the PCD file
-      pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>());
-      std::string file_path = "/home/yuanyan/Downloads/LOAM/cloudGlobal.pcd";
-      //Read the .pcd file and store into the cloud object (of type pcl::PointCloud<pcl::PointXYZ>).
-      if (pcl::io::loadPCDFile<pcl::PointXYZ>(file_path, *cloud) == -1) {
-          RCLCPP_ERROR(this->get_logger(), "Couldn't read file: %s", file_path.c_str());
-          return;
-      }
-      RCLCPP_INFO(this->get_logger(), "Loaded %lu points from %s", cloud->size(), file_path.c_str());
-
-      // Prepare visualizer
-      pcl::visualization::PCLVisualizer::Ptr viewer(new pcl::visualization::PCLVisualizer("Extracted Planes"));
-      viewer->setBackgroundColor(0, 0, 0);
-      viewer->addPointCloud<pcl::PointXYZ>(cloud, "original_cloud");
-      viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, "original_cloud");
-
-      // Plane model segmentation for feature exraction of walls and ceiling. Ref: https://pcl.readthedocs.io/projects/tutorials/en/latest/planar_segmentation.html
-      // RANSAC method
-      pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZ>());
-      pcl::SACSegmentation<pcl::PointXYZ> seg;
-      pcl::PointIndices::Ptr inliers(new pcl::PointIndices());
-      pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients());
-
-      seg.setOptimizeCoefficients(true);
-      seg.setModelType(pcl::SACMODEL_PLANE);
-      seg.setMethodType(pcl::SAC_RANSAC);
-      seg.setDistanceThreshold(distance_threshold); // Adjust as needed
-
-      pcl::ExtractIndices<pcl::PointXYZ> extract;
-      int i = 0;
-      
-      // Ensures the segmentation loop does not continue indefinitely. If the remaining cloud becomes too small (less than 30% of the original cloud), the loop stops.
-      while (cloud->size() > ignore_threshold * cloud_filtered->size()) {
-          // Segment the largest planar component of rest of cloed
-          seg.setInputCloud(cloud);
-          seg.segment(*inliers, *coefficients);//*inliers: A list of indices indicating which points in the cloud belong to the detected plane.
-                                                //*coefficients: A set of model coefficients (e.g., ax + by + cz + d = 0) describing the detected plane.
-          if (inliers->indices.empty()) {
-              RCLCPP_INFO(this->get_logger(), "No more planar components found.");
-              break;
-          }
-
-          RCLCPP_INFO(this->get_logger(), "Plane %d: %lu points", i++, inliers->indices.size());
-
-          // Extract the plane
-          pcl::PointCloud<pcl::PointXYZ>::Ptr plane_cloud(new pcl::PointCloud<pcl::PointXYZ>()); //Creates a new point cloud (plane_cloud) to store the points belonging to the detected plane.
-          extract.setInputCloud(cloud);
-          extract.setIndices(inliers);
-          extract.setNegative(false); // Extract only points in inliers.
-          extract.filter(*plane_cloud);
-
-          // Estimate the area of the plane
-          /*
-          pcl::PointXYZ min_pt, max_pt;
-          pcl::getMinMax3D(*plane_cloud, min_pt, max_pt);
-          double plane_area = (max_pt.x - min_pt.x) * (max_pt.y - min_pt.y);
-
-          if (plane_area < area_threshold) {
-            RCLCPP_INFO(this->get_logger(), "Plane %d discarded: area %.2f m² below threshold %.2f m²",
-                        i, plane_area, area_threshold);
-            extract.setNegative(true);
-            extract.filter(*cloud_filtered);
-            cloud.swap(cloud_filtered);
-            continue;
-          }
-
-          RCLCPP_INFO(this->get_logger(), "Plane %d: area %.2f m²", i, plane_area);
-          */
-
-          // Determine if the plane is a wall or ceiling
-          Eigen::Vector4f centroid;
-          pcl::compute3DCentroid(*plane_cloud, centroid);
-
-          float a = coefficients->values[0];
-          float b = coefficients->values[1];
-          float c = coefficients->values[2];
-          float d = coefficients->values[3];
-          Eigen::Vector3f normal(a, b, c);
-
-          /*
-          // Check orientation of the plane
-          if (std::abs(normal.dot(Eigen::Vector3f(0, 0, 1))) < 0.1) {
-              RCLCPP_INFO(this->get_logger(), "Detected vertical wall at centroid (%.2f, %.2f, %.2f)",
-                          centroid[0], centroid[1], centroid[2]);
-          } else if (normal.dot(Eigen::Vector3f(0, 0, -1)) > 0.9) {
-              RCLCPP_INFO(this->get_logger(), "Detected horizontal ceiling at centroid (%.2f, %.2f, %.2f)",
-                          centroid[0], centroid[1], centroid[2]);
-          } else {
-              RCLCPP_INFO(this->get_logger(), "Other plane detected.");
-          }
-          */
-
-          std::string plane_name = "Plane_" + std::to_string(i);
-          if (std::abs(normal.dot(Eigen::Vector3f(0, 0, 1))) < 0.1) {
-              RCLCPP_INFO(this->get_logger(), "Detected vertical wall at centroid (%.2f, %.2f, %.2f)",
-                          centroid[0], centroid[1], centroid[2]);
-              viewer->addPointCloud<pcl::PointXYZ>(plane_cloud, plane_name);
-              viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_COLOR,
-                                                        1.0, 0.0, 0.0, plane_name); //Showed in red
-          } else if (normal.dot(Eigen::Vector3f(0, 0, -1)) > 0.9) {
-              RCLCPP_INFO(this->get_logger(), "Detected horizontal ceiling at centroid (%.2f, %.2f, %.2f)",
-                          centroid[0], centroid[1], centroid[2]);
-              viewer->addPointCloud<pcl::PointXYZ>(plane_cloud, plane_name);
-              viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_COLOR,
-                                                        0.0, 1.0, 0.0, plane_name); //Showed in blue
-          } else {
-              RCLCPP_INFO(this->get_logger(), "Other plane detected.");
-          }
-
-          // Remove the extracted plane from the cloud
-          extract.setNegative(true);
-          extract.filter(*cloud_filtered);
-          cloud.swap(cloud_filtered);
-          i++;
+        // Load the PCD file
+        pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>());
+        std::string file_path = "/home/yuanyan/Downloads/LOAM/cloudGlobal.pcd";
+        //Read the .pcd file and store into the cloud object (of type pcl::PointCloud<pcl::PointXYZ>).
+        if (pcl::io::loadPCDFile<pcl::PointXYZ>(file_path, *cloud) == -1) {
+            RCLCPP_ERROR(this->get_logger(), "Couldn't read file: %s", file_path.c_str());
+            return;
         }
+        RCLCPP_INFO(this->get_logger(), "Loaded %lu points from %s", cloud->size(), file_path.c_str());
 
         // Save the processed file as a .ply
         std::string output_file = "/home/yuanyan/autonomous-exploration-with-lio-sam/src/vehicle_simulator/mesh/test/preview/pointcloud.ply";
@@ -148,6 +87,122 @@ private:
         } else {
             RCLCPP_INFO(this->get_logger(), "Processed cloud saved as: %s", output_file.c_str());
         }
+
+        // Prepare visualizer
+        pcl::visualization::PCLVisualizer::Ptr viewer(new pcl::visualization::PCLVisualizer("Extracted Planes"));
+        viewer->setBackgroundColor(0, 0, 0);
+        //viewer->addPointCloud<pcl::PointXYZ>(cloud, "original_cloud");
+        //viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, "original_cloud");
+
+        // Plane model segmentation for feature exraction of walls and ceiling. Ref: https://pcl.readthedocs.io/projects/tutorials/en/latest/planar_segmentation.html
+        // RANSAC method
+        pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZ>());
+        pcl::SACSegmentation<pcl::PointXYZ> seg;
+        pcl::PointIndices::Ptr inliers(new pcl::PointIndices());
+        pcl::ModelCoefficients::Ptr coefficients(new pcl::ModelCoefficients());
+
+        seg.setOptimizeCoefficients(true);
+        seg.setModelType(pcl::SACMODEL_PLANE);
+        seg.setMethodType(pcl::SAC_RANSAC);
+        seg.setDistanceThreshold(distance_threshold); // Adjust as needed
+
+        pcl::ExtractIndices<pcl::PointXYZ> extract;
+        int i = 0;
+
+        std::vector<Waypoint> waypoints; // List to store all waypoints
+        
+        // Ensures the segmentation loop does not continue indefinitely. If the remaining cloud becomes too small (less than 30% of the original cloud), the loop stops.
+        while (cloud->size() > ignore_threshold * cloud_filtered->size()) {
+            // Segment the largest planar component of rest of cloed
+            seg.setInputCloud(cloud);
+            seg.segment(*inliers, *coefficients);//*inliers: A list of indices indicating which points in the cloud belong to the detected plane.
+                                                    //*coefficients: A set of model coefficients (e.g., ax + by + cz + d = 0) describing the detected plane.
+            if (inliers->indices.empty()) {
+                RCLCPP_INFO(this->get_logger(), "No more planar components found.");
+                break;
+            }
+
+            RCLCPP_INFO(this->get_logger(), "Plane %d: %lu points", i++, inliers->indices.size());
+
+            // Extract the plane
+            pcl::PointCloud<pcl::PointXYZ>::Ptr plane_cloud(new pcl::PointCloud<pcl::PointXYZ>()); //Creates a new point cloud (plane_cloud) to store the points belonging to the detected plane.
+            extract.setInputCloud(cloud);
+            extract.setIndices(inliers);
+            extract.setNegative(false); // Extract only points in inliers.
+            extract.filter(*plane_cloud);
+
+            // Estimate the area of the plane
+            /*
+            pcl::PointXYZ min_pt, max_pt;
+            pcl::getMinMax3D(*plane_cloud, min_pt, max_pt);
+            double plane_area = (max_pt.x - min_pt.x) * (max_pt.y - min_pt.y);
+
+            if (plane_area < area_threshold) {
+                RCLCPP_INFO(this->get_logger(), "Plane %d discarded: area %.2f m² below threshold %.2f m²",
+                            i, plane_area, area_threshold);
+                extract.setNegative(true);
+                extract.filter(*cloud_filtered);
+                cloud.swap(cloud_filtered);
+                continue;
+            }
+
+            RCLCPP_INFO(this->get_logger(), "Plane %d: area %.2f m²", i, plane_area);
+            */
+
+            // Determine if the plane is a wall or ceiling
+            Eigen::Vector4f centroid;
+            pcl::compute3DCentroid(*plane_cloud, centroid);
+
+            float a = coefficients->values[0];
+            float b = coefficients->values[1];
+            float c = coefficients->values[2];
+            float d = coefficients->values[3];
+            Eigen::Vector3f normal(a, b, c);
+
+            /*
+            // Check orientation of the plane
+            if (std::abs(normal.dot(Eigen::Vector3f(0, 0, 1))) < 0.1) {
+                RCLCPP_INFO(this->get_logger(), "Detected vertical wall at centroid (%.2f, %.2f, %.2f)",
+                            centroid[0], centroid[1], centroid[2]);
+            } else if (normal.dot(Eigen::Vector3f(0, 0, -1)) > 0.9) {
+                RCLCPP_INFO(this->get_logger(), "Detected horizontal ceiling at centroid (%.2f, %.2f, %.2f)",
+                            centroid[0], centroid[1], centroid[2]);
+            } else {
+                RCLCPP_INFO(this->get_logger(), "Other plane detected.");
+            }
+            */
+
+            std::string plane_name = "Plane_" + std::to_string(i);
+            if (std::abs(normal.dot(Eigen::Vector3f(0, 0, 1))) < 0.1) {
+                // Generate waypoints for this plane
+                generateWaypointsForPlane(plane_cloud, waypoints);
+                RCLCPP_INFO(this->get_logger(), "Detected vertical wall at centroid (%.2f, %.2f, %.2f)",
+                            centroid[0], centroid[1], centroid[2]);
+                viewer->addPointCloud<pcl::PointXYZ>(plane_cloud, plane_name);
+                viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_COLOR,
+                                                            1.0, 0.0, 0.0, plane_name); //Showed in red
+            } else if (normal.dot(Eigen::Vector3f(0, 0, -1)) > 0.9) {
+                RCLCPP_INFO(this->get_logger(), "Detected horizontal ceiling at centroid (%.2f, %.2f, %.2f)",
+                            centroid[0], centroid[1], centroid[2]);
+                viewer->addPointCloud<pcl::PointXYZ>(plane_cloud, plane_name);
+                viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_COLOR,
+                                                            0.0, 1.0, 0.0, plane_name); //Showed in blue
+            } else {
+                RCLCPP_INFO(this->get_logger(), "Other plane detected.");
+            }
+
+            // Remove the extracted plane from the cloud
+            extract.setNegative(true);
+            extract.filter(*cloud_filtered);
+            cloud.swap(cloud_filtered);
+            i++;
+            }
+
+        // Order the waypoints
+        //orderWaypoints(waypoints);
+
+        // Visualize waypoints
+        visualizeWaypoints(viewer, waypoints);
 
         // Visualize
         viewer->spin();
