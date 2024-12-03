@@ -15,42 +15,246 @@
 #include <algorithm> // For sorting
 #include <cmath>
 #include <thread> // For delay in visualization
+#include <opencv2/opencv.hpp>
+#include <opencv2/dnn.hpp>
+#include <CGAL/Simple_cartesian.h>
+#include <CGAL/Polygon_2.h>
+#include <CGAL/convex_hull_2.h>
+#include <CGAL/Boolean_set_operations_2.h>
 
 struct Waypoint {
-    float x;
-    float y;
-    float z;
+    float x, y, z;
 };
 
-// Function to generate waypoints for a detected plane
-void generateWaypointsForPlane(const pcl::PointCloud<pcl::PointXYZ>::Ptr &plane_cloud,
-                               std::vector<Waypoint> &waypoints) {
-    float min_x = std::numeric_limits<float>::max();
-    float max_x = std::numeric_limits<float>::lowest();
-    float min_y = std::numeric_limits<float>::max();
-    float max_y = std::numeric_limits<float>::lowest();
+// RANSAC parameters
+const double ignore_threshold = 0.01; // The value determines how many points of the whole cloud will be ignored
+const double distance_threshold = 0.02;
 
-    for (const auto &point : plane_cloud->points) {
-        min_x = std::min(min_x, point.x);
-        max_x = std::max(max_x, point.x);
-        min_y = std::min(min_y, point.y);
-        max_y = std::max(max_y, point.y);
+// CV parameters
+const int image_size = 1000; // Adjust based on the map size
+const float z_coordinate = 0.1;
+const float area_threshold = 10.0;
+
+// CGAL typedefs
+typedef CGAL::Simple_cartesian<double> Kernel;
+typedef Kernel::Point_2 Point_2;
+typedef CGAL::Polygon_2<Kernel> Polygon_2;
+
+std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud) {
+    // Project the 3D point cloud to 2D
+    std::vector<cv::Point2f> points_2d;
+    for (const auto& point : cloud->points) {
+        points_2d.emplace_back(point.x, point.y);
     }
 
-    float wall_distance = 0.2; // Default distance from the wall
-    waypoints.push_back({min_x - wall_distance, min_y, 0.0});
-    waypoints.push_back({(min_x + max_x) / 2 - wall_distance, (min_y + max_y) / 2, 0.0});
-    waypoints.push_back({max_x - wall_distance, max_y, 0.0});
+    // Create a binary image representing the point cloud
+    cv::Mat binary_image = cv::Mat::zeros(image_size, image_size, CV_8UC1);
+    for (const auto& point : points_2d) {
+        int x = static_cast<int>((point.x + 10) * (image_size / 20.0)); // Map to image space
+        int y = static_cast<int>((point.y + 10) * (image_size / 20.0));
+        if (x >= 0 && x < image_size && y >= 0 && y < image_size) {
+            binary_image.at<uchar>(y, x) = 255;
+        }
+    }
+
+    // 3. Detect contours in the binary image
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(binary_image, contours, cv::RETR_TREE, cv::CHAIN_APPROX_NONE);
+
+    // 4. Process each contour using CGAL
+    std::vector<std::vector<cv::Point>> polygons;
+    cv::Mat result_image = cv::Mat::zeros(binary_image.size(), CV_8UC3);
+    cv::cvtColor(binary_image, result_image, cv::COLOR_GRAY2BGR);
+
+    for (const auto& contour : contours) {
+        // Convert OpenCV contour to CGAL points
+        std::vector<Point_2> contour_points;
+        for (const auto& pt : contour) {
+            contour_points.emplace_back(pt.x, pt.y); // Use image coordinates directly
+        }
+
+        // Visualize the raw contour
+        cv::drawContours(result_image, contours, -1, cv::Scalar(255, 255, 255), 1);
+
+        // Compute convex hull of the points (optional but useful for noisy data)
+        std::vector<Point_2> hull;
+        CGAL::convex_hull_2(contour_points.begin(), contour_points.end(), std::back_inserter(hull));
+
+        // Draw convex hull
+        for (size_t j = 0; j < hull.size(); ++j) {
+            int x1 = static_cast<int>(hull[j].x());
+            int y1 = static_cast<int>(hull[j].y());
+            int x2 = static_cast<int>(hull[(j + 1) % hull.size()].x());
+            int y2 = static_cast<int>(hull[(j + 1) % hull.size()].y());
+            cv::line(result_image, cv::Point(x1, y1), cv::Point(x2, y2), cv::Scalar(0, 255, 0), 1);
+        }
+
+        // Create a CGAL polygon from the convex hull
+        Polygon_2 polygon(hull.begin(), hull.end());
+
+        // Check if the polygon is valid
+        if (polygon.is_simple() && polygon.size() >= 4) {
+            // Calculate the area of the polygon
+            double area = 0.0;
+            for (auto vertex = polygon.vertices_begin(); vertex != polygon.vertices_end(); ++vertex) {
+                auto next_vertex = std::next(vertex);
+                if (next_vertex == polygon.vertices_end()) {
+                    next_vertex = polygon.vertices_begin(); // Wrap around for the last edge
+                }
+                area += vertex->x() * next_vertex->y() - vertex->y() * next_vertex->x();
+            }
+            area = std::abs(area) / 2.0;
+            if (area > area_threshold) {
+                std::vector<cv::Point> cv_polygon;
+                for (auto vertex = polygon.vertices_begin(); vertex != polygon.vertices_end(); ++vertex) {
+                        cv_polygon.emplace_back(vertex->x(), vertex->y());
+                }
+                polygons.push_back(cv_polygon);
+
+                // Draw the polygon on the result image
+                cv::polylines(result_image, cv_polygon, true, cv::Scalar(0, 255, 0), 2);
+            }
+        }
+    }
+
+    // Visualize the result
+    cv::imshow("Binary Image", binary_image);
+    cv::imshow("Detected Polygons", result_image);
+    cv::waitKey(0);
+
+    return polygons;
 }
 
-// Function to visualize waypoints in the PCL visualizer
-void visualizeWaypoints(pcl::visualization::PCLVisualizer::Ptr &viewer, 
-                        const std::vector<Waypoint> &waypoints) {
+
+/*
+// TODO: Add support for detecting other polygons
+std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud) {
+    // Project the 3D point cloud to 2D
+    std::vector<cv::Point2f> points_2d;
+    for (const auto& point : cloud->points) {
+        points_2d.emplace_back(point.x, point.y);
+    }
+
+    // Create a binary image representing the point cloud
+    cv::Mat binary_image = cv::Mat::zeros(image_size, image_size, CV_8UC1);
+    for (const auto& point : points_2d) {
+        int x = static_cast<int>((point.x + 10) * (image_size / 20.0)); // Map to image space
+        int y = static_cast<int>((point.y + 10) * (image_size / 20.0));
+        if (x >= 0 && x < image_size && y >= 0 && y < image_size) {
+            binary_image.at<uchar>(y, x) = 255;
+        }
+    }
+
+    // Detect contours and approximate polygons
+    std::vector<std::vector<cv::Point>> contours;
+    cv::findContours(binary_image, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
+
+    std::vector<std::vector<cv::Point>> rectangles;
+
+    cv::Mat result_image = cv::Mat::zeros(binary_image.size(), CV_8UC3); // For visualization
+    cv::cvtColor(binary_image, result_image, cv::COLOR_GRAY2BGR); // Convert binary image to color
+
+    for (const auto& contour : contours) {
+        std::vector<cv::Point> approx;
+        cv::approxPolyDP(contour, approx, 10, true); // Approximate contour as a polygon
+        if (approx.size() == 4 && cv::isContourConvex(approx)) { // Check for rectangles
+            rectangles.push_back(approx);
+
+            // Draw the detected rectangle on the result image
+            cv::polylines(result_image, approx, true, cv::Scalar(0, 255, 0), 2); // Green line
+        }
+        // Visualize the binary image and detected rectangles
+        cv::imshow("Binary Image", binary_image);
+        cv::imshow("Detected Rectangles", result_image);
+        cv::waitKey(0); // Wait for a key press to close the visualization windows
+    }
+    return rectangles;
+}
+*/
+
+std::vector<cv::Point2f> transformToRealWorld(const std::vector<cv::Point>& rectangle, 
+                                              int image_size, float map_range = 20.0) {
+    std::vector<cv::Point2f> real_world_coords;
+    for (const auto& vertex : rectangle) {
+        float real_x = (vertex.x * (map_range / image_size)) - 10; // Inverse of mapping formula
+        float real_y = (vertex.y * (map_range / image_size)) - 10;
+        real_world_coords.emplace_back(real_x, real_y);
+    }
+    return real_world_coords;
+}
+
+
+// Generate waypoints for a detected rectangles
+std::vector<Waypoint> generateWaypointsFromRectangles(
+    const std::vector<std::vector<cv::Point>>& rectangles,
+    float z_coordinate = 0.1) {
+
+    std::vector<Waypoint> all_waypoints;
+
+    // Find the largest rectangle (by area) to use as the bounding box
+    const std::vector<cv::Point>* largest_rectangle = nullptr;
+    double max_area = 0.0;
+    for (const auto& rectangle : rectangles) {
+        double area = cv::contourArea(rectangle);
+        if (area > max_area) {
+            max_area = area;
+            largest_rectangle = &rectangle;
+        }
+    }
+
+    if (!largest_rectangle) {
+        // No rectangles found
+        return all_waypoints;
+    }
+
+    // Transform bounding box to real-world coordinates
+    auto bounding_box_real = transformToRealWorld(*largest_rectangle, image_size);
+
+    // Check if a point is inside the bounding box
+    auto isInsideBoundingBox = [&](const cv::Point2f& point) -> bool {
+        std::vector<cv::Point2f> polygon(bounding_box_real.begin(), bounding_box_real.end());
+        return cv::pointPolygonTest(polygon, point, false) >= 0; // Returns true if point is inside
+    };
+
+    // Generate waypoints for all rectangles
+    for (const auto& rectangle : rectangles) {
+        bool is_bounding_box = (&rectangle == largest_rectangle);
+
+        std::vector<Waypoint> waypoints;
+        // Scale rectangle for waypoint generation
+        float scale_factor = is_bounding_box ? 0.95 : 1.1;
+        cv::Point2f center(0, 0);
+
+        // Transform rectangle vertices back to real-world coordinates
+        auto real_world_rectangle = transformToRealWorld(rectangle, image_size);
+
+        for (const auto& vertex : real_world_rectangle) {
+            center += cv::Point2f(vertex.x, vertex.y); // Accumulate vertex positions
+        }
+        center *= (1.0 / real_world_rectangle.size()); // Compute the center
+
+        for (const auto& vertex : real_world_rectangle) {
+            cv::Point2f vertex_f(vertex.x, vertex.y); // Convert to float point
+            cv::Point2f scaled_vertex = center + (vertex_f - center) * scale_factor;
+
+            // Check if the scaled vertex is inside the bounding box
+            if (isInsideBoundingBox(scaled_vertex)) {
+                waypoints.push_back({scaled_vertex.x, scaled_vertex.y, z_coordinate});
+            }
+        }
+
+        // Add waypoints to the global list
+        all_waypoints.insert(all_waypoints.end(), waypoints.begin(), waypoints.end());
+    }
+    return all_waypoints;
+}
+
+// Visualize waypoints in the PCL visualizer
+void visualizeWaypoints(pcl::visualization::PCLVisualizer::Ptr &viewer, const std::vector<Waypoint> &waypoints) {
     int waypoint_id = 0;
     for (const auto &wp : waypoints) {
         std::string point_id = "waypoint_" + std::to_string(waypoint_id);
-        viewer->addSphere<pcl::PointXYZ>(pcl::PointXYZ(wp.x, wp.y, wp.z), 0.05, 0.0, 0.0, 1.0, point_id);
-        //viewer->spinOnce(1000); // Show each waypoint for 1 second
+        viewer->addSphere<pcl::PointXYZ>(pcl::PointXYZ(wp.x, wp.y, wp.z), 0.1, 0.0, 0.0, 1.0, point_id);
         waypoint_id++;
     }
 }
@@ -64,11 +268,9 @@ public:
     }
     
 
-private:
+private:    
     void processPointCloud() {
-        //double area_threshold = 10; // Area threshold in square meters
-        double ignore_threshold = 0.001; // The value determines how many points of the whole cloud will be ignored
-        double distance_threshold = 0.01;
+        pcl::PointCloud<pcl::PointXYZ>::Ptr wall_features(new pcl::PointCloud<pcl::PointXYZ>());
 
         // Load the PCD file
         pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>());
@@ -108,8 +310,6 @@ private:
 
         pcl::ExtractIndices<pcl::PointXYZ> extract;
         int i = 0;
-
-        std::vector<Waypoint> waypoints; // List to store all waypoints
         
         // Ensures the segmentation loop does not continue indefinitely. If the remaining cloud becomes too small (less than 30% of the original cloud), the loop stops.
         while (cloud->size() > ignore_threshold * cloud_filtered->size()) {
@@ -173,20 +373,25 @@ private:
             */
 
             std::string plane_name = "Plane_" + std::to_string(i);
-            if (std::abs(normal.dot(Eigen::Vector3f(0, 0, 1))) < 0.1) {
-                // Generate waypoints for this plane
-                generateWaypointsForPlane(plane_cloud, waypoints);
+            if (std::abs(normal.dot(Eigen::Vector3f(0, 0, 1))) < 0.2) {
+
                 RCLCPP_INFO(this->get_logger(), "Detected vertical wall at centroid (%.2f, %.2f, %.2f)",
                             centroid[0], centroid[1], centroid[2]);
+
+                // Save the wall point cloud to wall_features
+                *wall_features += *plane_cloud;
+
                 viewer->addPointCloud<pcl::PointXYZ>(plane_cloud, plane_name);
                 viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_COLOR,
                                                             1.0, 0.0, 0.0, plane_name); //Showed in red
+
             } else if (normal.dot(Eigen::Vector3f(0, 0, -1)) > 0.9) {
                 RCLCPP_INFO(this->get_logger(), "Detected horizontal ceiling at centroid (%.2f, %.2f, %.2f)",
                             centroid[0], centroid[1], centroid[2]);
                 viewer->addPointCloud<pcl::PointXYZ>(plane_cloud, plane_name);
                 viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_COLOR,
-                                                            0.0, 1.0, 0.0, plane_name); //Showed in blue
+                                                            0.0, 1.0, 0.0, plane_name); //Showed in green
+
             } else {
                 RCLCPP_INFO(this->get_logger(), "Other plane detected.");
             }
@@ -197,12 +402,15 @@ private:
             cloud.swap(cloud_filtered);
             i++;
             }
-
-        // Order the waypoints
-        //orderWaypoints(waypoints);
+        
+        std::vector<Waypoint> waypoints; // List to store all waypoints
+        // Detect rectangles
+        auto rectangles = detectShapes(wall_features);
+        // Generate waypoints
+        std::vector<Waypoint> all_waypoints = generateWaypointsFromRectangles(rectangles, z_coordinate);        
 
         // Visualize waypoints
-        visualizeWaypoints(viewer, waypoints);
+        visualizeWaypoints(viewer, all_waypoints);
 
         // Visualize
         viewer->spin();

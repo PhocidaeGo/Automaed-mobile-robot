@@ -13,6 +13,8 @@
   <depend>pcl_msgs</depend>
   <depend>octomap_msgs</depend>
   <depend>rclcpp</depend>
+  <depend>opencv4</depend>
+  <depend>CGAL</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
