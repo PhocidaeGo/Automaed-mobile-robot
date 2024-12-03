@@ -20,6 +20,7 @@ sudo apt install libusb-dev
 sudo apt install ros-humble-perception-pcl        ros-humble-pcl-msgs        ros-humble-vision-opencv        ros-humble-xacro
 sudo add-apt-repository ppa:borglab/gtsam-release-4.1
 sudo apt install libgtsam-dev libgtsam-unstable-dev
+sudo apt-get install libcgal-dev
 ```
 
 ### Step 1: Install the Required Modules
@@ -91,3 +92,9 @@ colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
 
 2. To visulaize the .pcd file, you can use the online viewer:
 https://imagetostl.com/view-pcd-online#convert
+
+3. For the QR-code detection and coverage check in the construction site, RANSAC and CGAL are applied.
+
+RANSAC is used to fit the features of walls and ceiling in the point cloud, it finds the planes at first, which can filter out the curved surface like barrals or human in the enviroment. Then uses the normal vector to filter out other inrrevlent plane features like ladder in the room. Setting the area threshold for planes is optional, it may be helpful to filter out the inrrevlent some planes like toolbox in the room.
+
+Then CGAL is applied to detect the polygons in the binary image, which is the representaion of the environment. Furthermore, we can use the functions of planes to draw lines that can be easily detected by CGAL while generator less noise.do

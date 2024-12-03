@@ -33,7 +33,9 @@ const double distance_threshold = 0.02;
 // CV parameters
 const int image_size = 1000; // Adjust based on the map size
 const float z_coordinate = 0.1;
-const float area_threshold = 10.0;
+const float area_threshold = 1000.0;
+const float scale_down = 0.9;
+const float scale_up = 1.3;
 
 // CGAL typedefs
 typedef CGAL::Simple_cartesian<double> Kernel;
@@ -118,59 +120,12 @@ std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::Poin
     }
 
     // Visualize the result
-    cv::imshow("Binary Image", binary_image);
-    cv::imshow("Detected Polygons", result_image);
-    cv::waitKey(0);
+    //cv::imshow("Binary Image", binary_image);
+    //cv::imshow("Detected Polygons", result_image);
+    //cv::waitKey(0);
 
     return polygons;
 }
-
-
-/*
-// TODO: Add support for detecting other polygons
-std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud) {
-    // Project the 3D point cloud to 2D
-    std::vector<cv::Point2f> points_2d;
-    for (const auto& point : cloud->points) {
-        points_2d.emplace_back(point.x, point.y);
-    }
-
-    // Create a binary image representing the point cloud
-    cv::Mat binary_image = cv::Mat::zeros(image_size, image_size, CV_8UC1);
-    for (const auto& point : points_2d) {
-        int x = static_cast<int>((point.x + 10) * (image_size / 20.0)); // Map to image space
-        int y = static_cast<int>((point.y + 10) * (image_size / 20.0));
-        if (x >= 0 && x < image_size && y >= 0 && y < image_size) {
-            binary_image.at<uchar>(y, x) = 255;
-        }
-    }
-
-    // Detect contours and approximate polygons
-    std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(binary_image, contours, cv::RETR_EXTERNAL, cv::CHAIN_APPROX_SIMPLE);
-
-    std::vector<std::vector<cv::Point>> rectangles;
-
-    cv::Mat result_image = cv::Mat::zeros(binary_image.size(), CV_8UC3); // For visualization
-    cv::cvtColor(binary_image, result_image, cv::COLOR_GRAY2BGR); // Convert binary image to color
-
-    for (const auto& contour : contours) {
-        std::vector<cv::Point> approx;
-        cv::approxPolyDP(contour, approx, 10, true); // Approximate contour as a polygon
-        if (approx.size() == 4 && cv::isContourConvex(approx)) { // Check for rectangles
-            rectangles.push_back(approx);
-
-            // Draw the detected rectangle on the result image
-            cv::polylines(result_image, approx, true, cv::Scalar(0, 255, 0), 2); // Green line
-        }
-        // Visualize the binary image and detected rectangles
-        cv::imshow("Binary Image", binary_image);
-        cv::imshow("Detected Rectangles", result_image);
-        cv::waitKey(0); // Wait for a key press to close the visualization windows
-    }
-    return rectangles;
-}
-*/
 
 std::vector<cv::Point2f> transformToRealWorld(const std::vector<cv::Point>& rectangle, 
                                               int image_size, float map_range = 20.0) {
@@ -185,9 +140,7 @@ std::vector<cv::Point2f> transformToRealWorld(const std::vector<cv::Point>& rect
 
 
 // Generate waypoints for a detected rectangles
-std::vector<Waypoint> generateWaypointsFromRectangles(
-    const std::vector<std::vector<cv::Point>>& rectangles,
-    float z_coordinate = 0.1) {
+std::vector<Waypoint> generateWaypointsFromRectangles(const std::vector<std::vector<cv::Point>>& rectangles, float zCoordinate) {
 
     std::vector<Waypoint> all_waypoints;
 
@@ -222,7 +175,7 @@ std::vector<Waypoint> generateWaypointsFromRectangles(
 
         std::vector<Waypoint> waypoints;
         // Scale rectangle for waypoint generation
-        float scale_factor = is_bounding_box ? 0.95 : 1.1;
+        float scale_factor = is_bounding_box ? scale_down : scale_up;
         cv::Point2f center(0, 0);
 
         // Transform rectangle vertices back to real-world coordinates
@@ -274,7 +227,7 @@ private:
 
         // Load the PCD file
         pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>());
-        std::string file_path = "/home/yuanyan/Downloads/LOAM/cloudGlobal.pcd";
+        std::string file_path = "/home/yuanyan/Downloads/LOAM_Backup/cloudGlobal.pcd";
         //Read the .pcd file and store into the cloud object (of type pcl::PointCloud<pcl::PointXYZ>).
         if (pcl::io::loadPCDFile<pcl::PointXYZ>(file_path, *cloud) == -1) {
             RCLCPP_ERROR(this->get_logger(), "Couldn't read file: %s", file_path.c_str());
