@@ -1,6 +1,6 @@
 build/
-*.txt
+commands.txt
 install/
 log/
 .vscode
-
+*.onnx

@@ -14,12 +14,16 @@
 #include <vector>
 #include <algorithm> // For sorting
 #include <cmath>
-#include <thread> // For delay in visualization
+#include <iostream>
 #include <opencv2/opencv.hpp>
+#include <opencv2/dnn.hpp>
 #include <CGAL/Simple_cartesian.h>
 #include <CGAL/Polygon_2.h>
 #include <CGAL/convex_hull_2.h>
 #include <CGAL/Boolean_set_operations_2.h>
+
+#include <onnxruntime/core/session/onnxruntime_cxx_api.h>
+#include <filesystem>
 
 struct Waypoint {
     float x, y, z;
@@ -30,104 +34,130 @@ const double ignore_threshold = 0.01; // The value determines how many points of
 const double distance_threshold = 0.02;
 
 // CV parameters
-const int image_size = 1000; // Adjust based on the map size
+const int image_size = 640; //YOLOv5 default input size
 const float z_coordinate = 0.1;
 const float area_threshold = 1000.0;
 const float scale_down = 0.9;
 const float scale_up = 1.3;
 
-// CGAL typedefs
-typedef CGAL::Simple_cartesian<double> Kernel;
-typedef Kernel::Point_2 Point_2;
-typedef CGAL::Polygon_2<Kernel> Polygon_2;
 
-std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud) {
-    // Project the 3D point cloud to 2D
-    std::vector<cv::Point2f> points_2d;
-    for (const auto& point : cloud->points) {
-        points_2d.emplace_back(point.x, point.y);
+// Helper function to preprocess the binary image for YOLOv5
+cv::Mat preprocessImage(const cv::Mat& binary_image, int input_size) {
+    cv::Mat resized_image, float_image;
+    cv::resize(binary_image, resized_image, cv::Size(input_size, input_size));
+    resized_image.convertTo(float_image, CV_32F, 1.0 / 255.0); // Normalize to [0,1]
+    return float_image;
+}
+
+// Helper function to postprocess the model's output
+std::vector<std::vector<cv::Point>> postprocessResults(const std::vector<float>& outputs, float conf_threshold, int input_size) {
+    std::vector<std::vector<cv::Point>> rectangles;
+    const int num_classes = 1; // Assume detecting rectangles only
+    const int num_attrs = 5 + num_classes; // x, y, w, h, conf + num_classes
+    const int grid_size = static_cast<int>(std::sqrt(outputs.size() / num_attrs));
+    
+    for (int i = 0; i < outputs.size() / num_attrs; ++i) {
+        float conf = outputs[i * num_attrs + 4];
+        if (conf < conf_threshold) continue;
+
+        float cx = outputs[i * num_attrs] * input_size;
+        float cy = outputs[i * num_attrs + 1] * input_size;
+        float w = outputs[i * num_attrs + 2] * input_size;
+        float h = outputs[i * num_attrs + 3] * input_size;
+
+        cv::Point tl(static_cast<int>(cx - w / 2), static_cast<int>(cy - h / 2));
+        cv::Point br(static_cast<int>(cx + w / 2), static_cast<int>(cy + h / 2));
+        rectangles.push_back({tl, cv::Point(tl.x, br.y), br, cv::Point(br.x, tl.y)});
     }
+    return rectangles;
+}
 
-    // Create a binary image representing the point cloud
+// Main detection function
+std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud) {
+    // Convert point cloud to a 2D binary image
     cv::Mat binary_image = cv::Mat::zeros(image_size, image_size, CV_8UC1);
-    for (const auto& point : points_2d) {
-        int x = static_cast<int>((point.x + 10) * (image_size / 20.0)); // Map to image space
+    for (const auto& point : cloud->points) {
+        int x = static_cast<int>((point.x + 10) * (image_size / 20.0));
         int y = static_cast<int>((point.y + 10) * (image_size / 20.0));
         if (x >= 0 && x < image_size && y >= 0 && y < image_size) {
             binary_image.at<uchar>(y, x) = 255;
         }
     }
 
-    // 3. Detect contours in the binary image
-    std::vector<std::vector<cv::Point>> contours;
-    cv::findContours(binary_image, contours, cv::RETR_TREE, cv::CHAIN_APPROX_NONE);
+    // Preprocess binary image for YOLOv5
+    cv::Mat input_image = preprocessImage(binary_image, image_size);
 
-    // 4. Process each contour using CGAL
-    std::vector<std::vector<cv::Point>> polygons;
-    cv::Mat result_image = cv::Mat::zeros(binary_image.size(), CV_8UC3);
-    cv::cvtColor(binary_image, result_image, cv::COLOR_GRAY2BGR);
+    // Load ONNX Runtime session
+    Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "ShapeDetection");
+    Ort::SessionOptions session_options;
+    session_options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_EXTENDED);
+    Ort::Session session(env, "/home/yuanyan/autonomous-exploration-with-lio-sam/yolov5m.onnx", session_options);
 
-    for (const auto& contour : contours) {
-        // Convert OpenCV contour to CGAL points
-        std::vector<Point_2> contour_points;
-        for (const auto& pt : contour) {
-            contour_points.emplace_back(pt.x, pt.y); // Use image coordinates directly
-        }
+    // Get input and output info
+    Ort::AllocatorWithDefaultOptions allocator;
+    auto input_name_ptr = session.GetInputNameAllocated(0, allocator);
+    std::string input_name = input_name_ptr.get();
 
-        // Visualize the raw contour
-        cv::drawContours(result_image, contours, -1, cv::Scalar(255, 255, 255), 1);
+    auto output_name_ptr = session.GetOutputNameAllocated(0, allocator);
+    std::string output_name = output_name_ptr.get();
 
-        // Compute convex hull of the points (optional but useful for noisy data)
-        std::vector<Point_2> hull;
-        CGAL::convex_hull_2(contour_points.begin(), contour_points.end(), std::back_inserter(hull));
+    // Prepare input tensor
+    std::vector<int64_t> input_tensor_shape = {1, 3, image_size, image_size};
+    std::vector<float> input_tensor_values(input_image.total() * 3, 0.0f);
 
-        // Draw convex hull
-        for (size_t j = 0; j < hull.size(); ++j) {
-            int x1 = static_cast<int>(hull[j].x());
-            int y1 = static_cast<int>(hull[j].y());
-            int x2 = static_cast<int>(hull[(j + 1) % hull.size()].x());
-            int y2 = static_cast<int>(hull[(j + 1) % hull.size()].y());
-            cv::line(result_image, cv::Point(x1, y1), cv::Point(x2, y2), cv::Scalar(0, 255, 0), 1);
-        }
-
-        // Create a CGAL polygon from the convex hull
-        Polygon_2 polygon(hull.begin(), hull.end());
-
-        // Check if the polygon is valid
-        if (polygon.is_simple() && polygon.size() >= 4) {
-            // Calculate the area of the polygon
-            double area = 0.0;
-            for (auto vertex = polygon.vertices_begin(); vertex != polygon.vertices_end(); ++vertex) {
-                auto next_vertex = std::next(vertex);
-                if (next_vertex == polygon.vertices_end()) {
-                    next_vertex = polygon.vertices_begin(); // Wrap around for the last edge
-                }
-                area += vertex->x() * next_vertex->y() - vertex->y() * next_vertex->x();
-            }
-            area = std::abs(area) / 2.0;
-            if (area > area_threshold) {
-                std::vector<cv::Point> cv_polygon;
-                for (auto vertex = polygon.vertices_begin(); vertex != polygon.vertices_end(); ++vertex) {
-                        cv_polygon.emplace_back(vertex->x(), vertex->y());
-                }
-                polygons.push_back(cv_polygon);
-
-                // Draw the polygon on the result image
-                cv::polylines(result_image, cv_polygon, true, cv::Scalar(0, 255, 0), 2);
-            }
-        }
+    // Expand single channel to 3 channels (C, H, W)
+    for (int i = 0; i < input_image.total(); ++i) {
+        float value = input_image.data[i] / 255.0f; // Normalize to [0, 1]
+        input_tensor_values[i] = value;             // Red channel
+        input_tensor_values[i + input_image.total()] = value; // Green channel
+        input_tensor_values[i + 2 * input_image.total()] = value; // Blue channel
     }
 
-    // Visualize the result
-    //cv::imshow("Binary Image", binary_image);
-    //cv::imshow("Detected Polygons", result_image);
-    //cv::waitKey(0);
+    Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
+        Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeCPU),
+        input_tensor_values.data(),
+        input_tensor_values.size(),
+        input_tensor_shape.data(),
+        input_tensor_shape.size()
+    );
 
-    return polygons;
+    // Run inference
+    const char* input_names[] = {input_name.c_str()};
+    const char* output_names[] = {output_name.c_str()};
+
+    auto output_tensors = session.Run(
+        Ort::RunOptions{nullptr},
+        input_names,
+        &input_tensor,
+        1,
+        output_names,
+        1
+    );
+
+    // Extract output data
+    auto* output_data = output_tensors[0].GetTensorMutableData<float>();
+    size_t output_size = output_tensors[0].GetTensorTypeAndShapeInfo().GetElementCount();
+    std::vector<float> outputs(output_data, output_data + output_size);
+
+    // Postprocess output to extract rectangles
+    std::vector<std::vector<cv::Point>> detected_rectangles = postprocessResults(outputs, 0.25, image_size);
+
+    // Visualize results
+    cv::Mat result_image;
+    cv::cvtColor(binary_image, result_image, cv::COLOR_GRAY2BGR);
+    for (const auto& rect : detected_rectangles) {
+        cv::polylines(result_image, rect, true, cv::Scalar(0, 255, 0), 2);
+    }
+
+    cv::imshow("Binary Image", binary_image);
+    cv::imshow("Detected Rectangles", result_image);
+    cv::waitKey(0);
+
+    return detected_rectangles;
 }
 
-std::vector<cv::Point2f> transformToRealWorld(const std::vector<cv::Point>& rectangle, 
-                                              int image_size, float map_range = 20.0) {
+
+std::vector<cv::Point2f> transformToRealWorld(const std::vector<cv::Point>& rectangle, int image_size, float map_range = 20.0) {
     std::vector<cv::Point2f> real_world_coords;
     for (const auto& vertex : rectangle) {
         float real_x = (vertex.x * (map_range / image_size)) - 10; // Inverse of mapping formula
@@ -323,7 +353,7 @@ private:
             cloud.swap(cloud_filtered);
             i++;
             }
-        
+
         std::vector<Waypoint> waypoints; // List to store all waypoints
         // Detect rectangles
         auto rectangles = detectShapes(wall_features);

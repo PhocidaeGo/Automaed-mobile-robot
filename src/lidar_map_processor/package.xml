@@ -15,6 +15,7 @@
   <depend>rclcpp</depend>
   <depend>opencv4</depend>
   <depend>CGAL</depend>
+  <depend>onnxruntime</depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
