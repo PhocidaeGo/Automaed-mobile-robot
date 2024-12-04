@@ -26,43 +26,74 @@ struct Waypoint {
 };
 
 // RANSAC parameters
-const double ignore_threshold = 0.01; // The value determines how many points of the whole cloud will be ignored
+const double ignore_threshold = 0.01; // The value determines how many points of the whole cloud will be ignored.
 const double distance_threshold = 0.02;
 
 // CV parameters
-const int image_size = 1000; // Adjust based on the map size
+const int image_size = 500; // Adjust based on the map size, calculate the length each pixel represents in real world. It will also affect the kernel size.
 const float z_coordinate = 0.1;
-const float area_threshold = 1000.0;
-const float scale_down = 0.9;
-const float scale_up = 1.3;
+const float image_area_threshold = 1000.0; //should be dynamic with image size, can't use area in point cloud, since a random point in space can still be classifie to a wall as long as it's on the same plane.
+
+const float scale_down = 0.9; // Adjust this to control the distance between way points and bounding box (the boundary of the room).
+const float scale_up = 1.3; // Adjust this to control the distance between way points and walls in the room.
 
 // CGAL typedefs
 typedef CGAL::Simple_cartesian<double> Kernel;
 typedef Kernel::Point_2 Point_2;
 typedef CGAL::Polygon_2<Kernel> Polygon_2;
 
-std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud) {
-    // Project the 3D point cloud to 2D
-    std::vector<cv::Point2f> points_2d;
-    for (const auto& point : cloud->points) {
-        points_2d.emplace_back(point.x, point.y);
-    }
-
-    // Create a binary image representing the point cloud
+cv::Mat projectPointCloudToBinaryImage(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, int image_size, float range = 20.0) {
+    // Create a blank binary image
     cv::Mat binary_image = cv::Mat::zeros(image_size, image_size, CV_8UC1);
-    for (const auto& point : points_2d) {
-        int x = static_cast<int>((point.x + 10) * (image_size / 20.0)); // Map to image space
-        int y = static_cast<int>((point.y + 10) * (image_size / 20.0));
+
+    // Project each 3D point to 2D and populate the binary image
+    for (const auto& point : cloud->points) {
+        int x = static_cast<int>((point.x + range / 2.0) * (image_size / range)); // Map to image space
+        int y = static_cast<int>((point.y + range / 2.0) * (image_size / range));
         if (x >= 0 && x < image_size && y >= 0 && y < image_size) {
             binary_image.at<uchar>(y, x) = 255;
         }
     }
 
-    // 3. Detect contours in the binary image
+    return binary_image;
+}
+
+cv::Mat enhanceImage(const cv::Mat& dense_image, const cv::Mat& sparse_image) {
+    cv::Mat denoise_dense;
+    cv::GaussianBlur(dense_image, denoise_dense, cv::Size(5, 5), 0);
+
+    // Dilate the sparse image to create a region of interest (ROI)
+    cv::Mat roi_mask;
+    cv::Mat kernel_mask = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(12, 12));
+    cv::dilate(sparse_image, roi_mask, kernel_mask);
+
+    // Create a new blank binary image
+    cv::Mat refined_image = cv::Mat::zeros(denoise_dense.size(), CV_8UC1);
+
+    // terate over all pixels in the dense image
+    for (int y = 0; y < denoise_dense.rows; ++y) {
+        for (int x = 0; x < denoise_dense.cols; ++x) {
+            // If the current pixel in the dense image is within the ROI, retain it
+            if (roi_mask.at<uchar>(y, x) > 0 && denoise_dense.at<uchar>(y, x) > 0) {
+                refined_image.at<uchar>(y, x) = 255; // Retain the dense image point
+            }
+        }
+    }
+    return refined_image;
+}
+
+std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, cv::Mat dense_image) {
+    cv::Mat sparse_image = projectPointCloudToBinaryImage(cloud, image_size);
+    cv::imshow("sparse image", sparse_image);
+
+    // Enhance the sparse image with the dense image
+    cv::Mat binary_image = enhanceImage(dense_image, sparse_image);
+
+    // Detect contours in the binary image
     std::vector<std::vector<cv::Point>> contours;
     cv::findContours(binary_image, contours, cv::RETR_TREE, cv::CHAIN_APPROX_NONE);
 
-    // 4. Process each contour using CGAL
+    // Process each contour using CGAL
     std::vector<std::vector<cv::Point>> polygons;
     cv::Mat result_image = cv::Mat::zeros(binary_image.size(), CV_8UC3);
     cv::cvtColor(binary_image, result_image, cv::COLOR_GRAY2BGR);
@@ -105,7 +136,7 @@ std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::Poin
                 area += vertex->x() * next_vertex->y() - vertex->y() * next_vertex->x();
             }
             area = std::abs(area) / 2.0;
-            if (area > area_threshold) {
+            if (area > image_area_threshold) {
                 std::vector<cv::Point> cv_polygon;
                 for (auto vertex = polygon.vertices_begin(); vertex != polygon.vertices_end(); ++vertex) {
                         cv_polygon.emplace_back(vertex->x(), vertex->y());
@@ -113,7 +144,7 @@ std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::Poin
                 polygons.push_back(cv_polygon);
 
                 // Draw the polygon on the result image
-                cv::polylines(result_image, cv_polygon, true, cv::Scalar(0, 255, 0), 2);
+                cv::polylines(result_image, cv_polygon, true, cv::Scalar(0, 255, 255), 3);
             }
         }
     }
@@ -234,6 +265,9 @@ private:
         }
         RCLCPP_INFO(this->get_logger(), "Loaded %lu points from %s", cloud->size(), file_path.c_str());
 
+        cv::Mat cloud_image = projectPointCloudToBinaryImage(cloud, image_size);
+        //cv::imshow("Cloud image", cloud_image);
+
         // Save the processed file as a .ply
         std::string output_file = "/home/yuanyan/autonomous-exploration-with-lio-sam/src/vehicle_simulator/mesh/test/preview/pointcloud.ply";
         if (pcl::io::savePLYFile(output_file, *cloud) == -1) {
@@ -326,7 +360,7 @@ private:
         
         std::vector<Waypoint> waypoints; // List to store all waypoints
         // Detect rectangles
-        auto rectangles = detectShapes(wall_features);
+        auto rectangles = detectShapes(wall_features, cloud_image);
         // Generate waypoints
         std::vector<Waypoint> all_waypoints = generateWaypointsFromRectangles(rectangles, z_coordinate);        
 
