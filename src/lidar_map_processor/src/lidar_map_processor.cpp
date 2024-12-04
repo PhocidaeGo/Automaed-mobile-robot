@@ -60,7 +60,7 @@ cv::Mat projectPointCloudToBinaryImage(const pcl::PointCloud<pcl::PointXYZ>::Ptr
 
 cv::Mat enhanceImage(const cv::Mat& dense_image, const cv::Mat& sparse_image) {
     cv::Mat denoise_dense;
-    cv::GaussianBlur(dense_image, denoise_dense, cv::Size(5, 5), 0);
+    cv::GaussianBlur(dense_image, denoise_dense, cv::Size(3, 3), 0);
 
     // Dilate the sparse image to create a region of interest (ROI)
     cv::Mat roi_mask;
@@ -74,7 +74,7 @@ cv::Mat enhanceImage(const cv::Mat& dense_image, const cv::Mat& sparse_image) {
     for (int y = 0; y < denoise_dense.rows; ++y) {
         for (int x = 0; x < denoise_dense.cols; ++x) {
             // If the current pixel in the dense image is within the ROI, retain it
-            if (roi_mask.at<uchar>(y, x) > 0 && denoise_dense.at<uchar>(y, x) > 0) {
+            if (roi_mask.at<uchar>(y, x) > 0 && denoise_dense.at<uchar>(y, x) > 125) {
                 refined_image.at<uchar>(y, x) = 255; // Retain the dense image point
             }
         }
