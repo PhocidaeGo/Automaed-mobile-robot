@@ -37,6 +37,9 @@ const float image_area_threshold = 1000.0; //should be dynamic with image size, 
 const float scale_down = 0.9; // Adjust this to control the distance between way points and bounding box (the boundary of the room).
 const float scale_up = 1.3; // Adjust this to control the distance between way points and walls in the room.
 
+// Way point generator
+const double points_min_distance = 0.6; // meters
+
 // CGAL typedefs
 typedef CGAL::Simple_cartesian<double> Kernel;
 typedef Kernel::Point_2 Point_2;
@@ -84,7 +87,7 @@ cv::Mat enhanceImage(const cv::Mat& dense_image, const cv::Mat& sparse_image) {
 
 std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, cv::Mat dense_image) {
     cv::Mat sparse_image = projectPointCloudToBinaryImage(cloud, image_size);
-    cv::imshow("sparse image", sparse_image);
+    //cv::imshow("sparse image", sparse_image);
 
     // Enhance the sparse image with the dense image
     cv::Mat binary_image = enhanceImage(dense_image, sparse_image);
@@ -151,8 +154,8 @@ std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::Poin
 
     // Visualize the result
     //cv::imshow("Binary Image", binary_image);
-    //cv::imshow("Detected Polygons", result_image);
-    //cv::waitKey(0);
+    cv::imshow("Detected Polygons", result_image);
+    cv::waitKey(0);
 
     return polygons;
 }
@@ -167,7 +170,6 @@ std::vector<cv::Point2f> transformToRealWorld(const std::vector<cv::Point>& rect
     }
     return real_world_coords;
 }
-
 
 // Generate waypoints for a detected rectangles
 std::vector<Waypoint> generateWaypointsFromRectangles(const std::vector<std::vector<cv::Point>>& rectangles, float zCoordinate) {
@@ -199,6 +201,18 @@ std::vector<Waypoint> generateWaypointsFromRectangles(const std::vector<std::vec
         return cv::pointPolygonTest(polygon, point, false) >= 0; // Returns true if point is inside
     };
 
+    // Check if a waypoint is too close to any existing waypoint
+    auto isTooCloseToExistingWaypoints = [&](const Waypoint& new_waypoint) -> bool {
+        for (const auto& existing_waypoint : all_waypoints) {
+            double distance = std::sqrt(std::pow(new_waypoint.x - existing_waypoint.x, 2) +
+                                        std::pow(new_waypoint.y - existing_waypoint.y, 2));
+            if (distance < points_min_distance) {
+                return true; // Too close to an existing waypoint
+            }
+        }
+        return false;
+    };
+
     // Generate waypoints for all rectangles
     for (const auto& rectangle : rectangles) {
         bool is_bounding_box = (&rectangle == largest_rectangle);
@@ -222,10 +236,12 @@ std::vector<Waypoint> generateWaypointsFromRectangles(const std::vector<std::vec
 
             // Check if the scaled vertex is inside the bounding box
             if (isInsideBoundingBox(scaled_vertex)) {
-                waypoints.push_back({scaled_vertex.x, scaled_vertex.y, z_coordinate});
+                Waypoint new_waypoint = {scaled_vertex.x, scaled_vertex.y, zCoordinate};
+                if (!isTooCloseToExistingWaypoints(new_waypoint)) {
+                    all_waypoints.push_back(new_waypoint);
+                }
             }
         }
-
         // Add waypoints to the global list
         all_waypoints.insert(all_waypoints.end(), waypoints.begin(), waypoints.end());
     }
