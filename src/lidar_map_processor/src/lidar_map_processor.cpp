@@ -35,10 +35,13 @@ const float z_coordinate = 0.1;
 const float image_area_threshold = 1000.0; //should be dynamic with image size, can't use area in point cloud, since a random point in space can still be classifie to a wall as long as it's on the same plane.
 
 const float scale_down = 0.9; // Adjust this to control the distance between way points and bounding box (the boundary of the room).
-const float scale_up = 1.3; // Adjust this to control the distance between way points and walls in the room.
+const float scale_up = 1.2; // Adjust this to control the distance between way points and walls in the room.
+
+const double center_distance_threshold = 20; // Filter out duplicate polygons
 
 // Way point generator
-const double points_min_distance = 0.6; // meters
+const double points_min_distance = 0.6; // meters, filter out duplicate way points
+
 
 // CGAL typedefs
 typedef CGAL::Simple_cartesian<double> Kernel;
@@ -101,6 +104,8 @@ std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::Poin
     cv::Mat result_image = cv::Mat::zeros(binary_image.size(), CV_8UC3);
     cv::cvtColor(binary_image, result_image, cv::COLOR_GRAY2BGR);
 
+    std::vector<cv::Point2f> polygon_centers;     // List to store centers of polygons
+
     for (const auto& contour : contours) {
         // Convert OpenCV contour to CGAL points
         std::vector<Point_2> contour_points;
@@ -140,14 +145,38 @@ std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::Poin
             }
             area = std::abs(area) / 2.0;
             if (area > image_area_threshold) {
-                std::vector<cv::Point> cv_polygon;
+                 // Calculate the center of the polygon
+                cv::Point2f center(0, 0);
                 for (auto vertex = polygon.vertices_begin(); vertex != polygon.vertices_end(); ++vertex) {
-                        cv_polygon.emplace_back(vertex->x(), vertex->y());
+                    center.x += vertex->x();
+                    center.y += vertex->y();
                 }
-                polygons.push_back(cv_polygon);
+                center.x /= polygon.size();
+                center.y /= polygon.size();
 
-                // Draw the polygon on the result image
-                cv::polylines(result_image, cv_polygon, true, cv::Scalar(0, 255, 255), 3);
+                // Check if this polygon's center is too close to any existing center
+                bool is_duplicate = false;
+                for (const auto& existing_center : polygon_centers) {
+                    if (cv::norm(center - existing_center) < center_distance_threshold) {
+                        is_duplicate = true;
+                        break;
+                    }
+                }
+
+                if (!is_duplicate) {
+                    // Add this polygon's center to the list of centers
+                    polygon_centers.push_back(center);
+
+                    // Convert CGAL polygon to OpenCV polygon
+                    std::vector<cv::Point> cv_polygon;
+                    for (auto vertex = polygon.vertices_begin(); vertex != polygon.vertices_end(); ++vertex) {
+                        cv_polygon.emplace_back(vertex->x(), vertex->y());
+                    }
+                    polygons.push_back(cv_polygon);
+
+                    // Draw the polygon on the result image
+                    cv::polylines(result_image, cv_polygon, true, cv::Scalar(0, 255, 255), 3);
+                }
             }
         }
     }
@@ -340,7 +369,7 @@ private:
             float a = coefficients->values[0];
             float b = coefficients->values[1];
             float c = coefficients->values[2];
-            float d = coefficients->values[3];
+            //float d = coefficients->values[3];
             Eigen::Vector3f normal(a, b, c);
 
             std::string plane_name = "Plane_" + std::to_string(i);
