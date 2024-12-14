@@ -15,11 +15,14 @@
 #include <algorithm> // For sorting
 #include <cmath>
 #include <thread> // For delay in visualization
+#include <chrono> // For std::chrono::seconds
 #include <opencv2/opencv.hpp>
 #include <CGAL/Simple_cartesian.h>
 #include <CGAL/Polygon_2.h>
 #include <CGAL/convex_hull_2.h>
 #include <CGAL/Boolean_set_operations_2.h>
+#include <fstream>
+#include <sstream>
 
 struct Waypoint {
     float x, y, z;
@@ -27,7 +30,7 @@ struct Waypoint {
 
 // RANSAC parameters
 const double ignore_threshold = 0.01; // The value determines how many points of the whole cloud will be ignored.
-const double distance_threshold = 0.02;
+const double distance_threshold = 0.05; // Too large is also not good
 
 // CV parameters
 const int image_size = 500; // Adjust based on the map size, calculate the length each pixel represents in real world. It will also affect the kernel size.
@@ -35,12 +38,12 @@ const float z_coordinate = 0.1;
 const float image_area_threshold = 1000.0; //should be dynamic with image size, can't use area in point cloud, since a random point in space can still be classifie to a wall as long as it's on the same plane.
 
 const float scale_down = 0.9; // Adjust this to control the distance between way points and bounding box (the boundary of the room).
-const float scale_up = 1.2; // Adjust this to control the distance between way points and walls in the room.
+const float scale_up = 1.4; // Adjust this to control the distance between way points and walls in the room.
 
 const double center_distance_threshold = 20; // Filter out duplicate polygons
 
 // Way point generator
-const double points_min_distance = 0.6; // meters, filter out duplicate way points
+const double points_min_distance = 1; // meters, filter out duplicate way points
 
 
 // CGAL typedefs
@@ -66,12 +69,16 @@ cv::Mat projectPointCloudToBinaryImage(const pcl::PointCloud<pcl::PointXYZ>::Ptr
 
 cv::Mat enhanceImage(const cv::Mat& dense_image, const cv::Mat& sparse_image) {
     cv::Mat denoise_dense;
-    cv::GaussianBlur(dense_image, denoise_dense, cv::Size(3, 3), 0);
+    cv::GaussianBlur(dense_image, denoise_dense, cv::Size(3, 3), 0); // better than medianBlur
+    //cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(2, 2)); // Kernel size
+    //cv::morphologyEx(dense_image, denoise_dense, cv::MORPH_CLOSE, kernel);
+    //cv:imshow("denoise_dense", denoise_dense);
 
     // Dilate the sparse image to create a region of interest (ROI)
     cv::Mat roi_mask;
-    cv::Mat kernel_mask = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(12, 12));
+    cv::Mat kernel_mask = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 5)); 
     cv::dilate(sparse_image, roi_mask, kernel_mask);
+    //cv::imshow("mask", roi_mask);
 
     // Create a new blank binary image
     cv::Mat refined_image = cv::Mat::zeros(denoise_dense.size(), CV_8UC1);
@@ -80,16 +87,22 @@ cv::Mat enhanceImage(const cv::Mat& dense_image, const cv::Mat& sparse_image) {
     for (int y = 0; y < denoise_dense.rows; ++y) {
         for (int x = 0; x < denoise_dense.cols; ++x) {
             // If the current pixel in the dense image is within the ROI, retain it
-            if (roi_mask.at<uchar>(y, x) > 0 && denoise_dense.at<uchar>(y, x) > 125) {
+            if (roi_mask.at<uchar>(y, x) > 0 && denoise_dense.at<uchar>(y, x) > 125) { //125 for GaussianBlur
                 refined_image.at<uchar>(y, x) = 255; // Retain the dense image point
             }
         }
     }
-    return refined_image;
+    //cv::imshow("refined_img", refined_image);
+    cv::Mat output_image;
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 5)); // Kernel size
+    cv::morphologyEx(refined_image, output_image, cv::MORPH_CLOSE, kernel);
+    //cv::imshow("output_img", output_image);
+    return output_image;
 }
 
 std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, cv::Mat dense_image) {
     cv::Mat sparse_image = projectPointCloudToBinaryImage(cloud, image_size);
+    //cv::imshow("dense image", dense_image);
     //cv::imshow("sparse image", sparse_image);
 
     // Enhance the sparse image with the dense image
@@ -107,14 +120,19 @@ std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::Poin
     std::vector<cv::Point2f> polygon_centers;     // List to store centers of polygons
 
     for (const auto& contour : contours) {
+        // Simplify the contour using approxPolyDP
+        std::vector<cv::Point> simplified_contour;
+        double epsilon = 0.02 * cv::arcLength(contour, true); // Adjust epsilon for simplification
+        cv::approxPolyDP(contour, simplified_contour, epsilon, true);
+
         // Convert OpenCV contour to CGAL points
         std::vector<Point_2> contour_points;
-        for (const auto& pt : contour) {
+        for (const auto& pt : simplified_contour) {
             contour_points.emplace_back(pt.x, pt.y); // Use image coordinates directly
         }
 
         // Visualize the raw contour
-        cv::drawContours(result_image, contours, -1, cv::Scalar(255, 255, 255), 1);
+        cv::drawContours(result_image, std::vector<std::vector<cv::Point>>{simplified_contour}, -1, cv::Scalar(255, 255, 255), 1);
 
         // Compute convex hull of the points (optional but useful for noisy data)
         std::vector<Point_2> hull;
@@ -183,8 +201,8 @@ std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::Poin
 
     // Visualize the result
     //cv::imshow("Binary Image", binary_image);
-    cv::imshow("Detected Polygons", result_image);
-    cv::waitKey(0);
+    //cv::imshow("Detected Polygons", result_image);
+    //cv::waitKey(0);
 
     return polygons;
 }
@@ -277,16 +295,27 @@ std::vector<Waypoint> generateWaypointsFromRectangles(const std::vector<std::vec
     return all_waypoints;
 }
 
+
 // Visualize waypoints in the PCL visualizer
 void visualizeWaypoints(pcl::visualization::PCLVisualizer::Ptr &viewer, const std::vector<Waypoint> &waypoints) {
     int waypoint_id = 0;
     for (const auto &wp : waypoints) {
         std::string point_id = "waypoint_" + std::to_string(waypoint_id);
-        viewer->addSphere<pcl::PointXYZ>(pcl::PointXYZ(wp.x, wp.y, wp.z), 0.1, 0.0, 0.0, 1.0, point_id);
+        viewer->addSphere<pcl::PointXYZ>(pcl::PointXYZ(wp.x, wp.y, wp.z), 0.3, 0.0, 1.0, 1.0, point_id);
         waypoint_id++;
     }
 }
 
+void writeWaypointsToFile(const std::vector<Waypoint>& waypoints, const std::string& filename) {
+    std::ofstream file(filename);
+    if (!file.is_open()) {
+        throw std::runtime_error("Unable to open file for writing");
+    }
+    for (const auto& waypoint : waypoints) {
+        file << waypoint.x << " " << waypoint.y << " " << waypoint.z << "\n";
+    }
+    file.close();
+}
 
 class LidarMapProcessor : public rclcpp::Node {
 public:
@@ -406,8 +435,12 @@ private:
         std::vector<Waypoint> waypoints; // List to store all waypoints
         // Detect rectangles
         auto rectangles = detectShapes(wall_features, cloud_image);
+
         // Generate waypoints
-        std::vector<Waypoint> all_waypoints = generateWaypointsFromRectangles(rectangles, z_coordinate);        
+        std::vector<Waypoint> all_waypoints = generateWaypointsFromRectangles(rectangles, z_coordinate); 
+
+        // Write waypoints to file
+        writeWaypointsToFile(all_waypoints, "waypoints.txt");       
 
         // Visualize waypoints
         visualizeWaypoints(viewer, all_waypoints);

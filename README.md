@@ -101,6 +101,14 @@ colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
    
    Result: If kernel size is proper, it works well.
 
+5. **Launch Waypoint Publisher**:
+
+   ```bash
+   source install/setup.bash
+   ros2 run waypoint_publisher waypoint_publisher
+   ```
+   Now you should see the robot moving around the features. 
+
 
 ## Others
 
