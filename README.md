@@ -101,7 +101,16 @@ colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
    
    Result: If kernel size is proper, it works well.
 
-5. **Launch Waypoint Publisher**:
+5. **Launch File Transmitter**:
+
+   ```bash
+   source install/setup.bash
+   ros2 run file_transfer_pkg file_sender
+   ros2 run file_transfer_pkg file_receiver
+   ```
+   Now you can transmit files from robot to desktop. 
+
+6. **Launch Waypoint Publisher**:
 
    ```bash
    source install/setup.bash
