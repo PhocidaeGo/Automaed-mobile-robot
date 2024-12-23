@@ -32,7 +32,7 @@ struct Waypoint {
 std::string file_path = "/home/yuanyan/Downloads/LOAM/cloudGlobal.pcd";
 
 // Mode selection
-const bool walls_in_room = false; // false means there is no individual walls in the room
+bool walls_in_room = false; // false means there is no individual walls in the room
 
 // RANSAC parameters
 const double ignore_threshold = 0.01; // The value determines how many points of the whole cloud will be ignored.
@@ -46,7 +46,7 @@ const float image_area_threshold = 300.0; //should be dynamic with image size, c
 const float scale_down = 0.9; // Adjust this to control the distance between way points and bounding box (the boundary of the room).
 const float scale_up = 1.3; // Adjust this to control the distance between way points and walls in the room.
 
-const double center_distance_threshold = 5; // Filter out duplicate polygons
+const double center_distance_threshold = 2; // Filter out duplicate polygons
 
 float min_x, max_x, min_y, max_y;
 float width, height, aspect_ratio;
@@ -166,7 +166,7 @@ std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::Poin
     for (const auto& contour : contours) {
         // Simplify the contour using approxPolyDP
         std::vector<cv::Point> simplified_contour;
-        double epsilon = 0.03 * cv::arcLength(contour, true); // Adjust epsilon for simplification, 0.02 for test.world
+        double epsilon = 0.02 * cv::arcLength(contour, true); // Adjust epsilon for simplification, 0.02 for test.world
         cv::approxPolyDP(contour, simplified_contour, epsilon, true);
 
         
@@ -199,8 +199,7 @@ std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::Poin
 
         Polygon_2 polygon(contour_points.begin(), contour_points.end());
         // Check if the polygon is valid
-        //if (polygon.size() >= 3) {
-        if (polygon.size() >= 3) {
+        if (polygon.size() >= 4) {
             // Calculate the area of the polygon
             double area = 0.0;
             for (auto vertex = polygon.vertices_begin(); vertex != polygon.vertices_end(); ++vertex) {
@@ -256,10 +255,55 @@ std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::Poin
     return polygons;
 }
 
+// Function to calculate the minimum distance between a point and a line segment
+double pointToSegmentDistance(const cv::Point& p, const cv::Point& a, const cv::Point& b) {
+    double l2 = std::pow(b.x - a.x, 2) + std::pow(b.y - a.y, 2); // Length squared of the segment
+    if (l2 == 0.0) return std::hypot(p.x - a.x, p.y - a.y);     // Segment is a point
+
+    double t = std::max(0.0, std::min(1.0, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / l2));
+    cv::Point projection(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y));
+    return std::hypot(p.x - projection.x, p.y - projection.y);
+}
+
+// Function to check if any vertex of a polygon is close to the edge of another polygon
+bool isVertexOnEdge(const std::vector<std::vector<cv::Point>>& polygons, double threshold) {
+    for (size_t i = 0; i < polygons.size(); ++i) {
+        for (size_t j = 0; j < polygons.size(); ++j) {
+            if (i == j) continue; // Skip comparing the polygon with itself
+
+            // Check each vertex of polygon[i] against edges of polygon[j]
+            for (const auto& vertex : polygons[i]) {
+                for (size_t k = 0; k < polygons[j].size(); ++k) {
+                    cv::Point a = polygons[j][k];
+                    cv::Point b = polygons[j][(k + 1) % polygons[j].size()]; // Wrap around to form a closed polygon
+
+                    // Calculate the distance from the vertex to the edge
+                    double distance = pointToSegmentDistance(vertex, a, b);
+                    if (distance < threshold) {
+                        return true; // A vertex is close to an edge
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
 // Generate waypoints for a detected polygons. For multiple rooms and there is no wall inside
 std::vector<Waypoint> generateWaypoints(const std::vector<std::vector<cv::Point>>& rectangles, float zCoordinate) {
 
     std::vector<Waypoint> all_waypoints;
+    // Find the largest rectangle (by area) to use as the bounding box
+    const std::vector<cv::Point>* largest_rectangle = nullptr;
+
+    double max_area = 0.0;
+    for (const auto& rectangle : rectangles) {
+        double area = cv::contourArea(rectangle);
+        if (area > max_area) {
+            max_area = area;
+            largest_rectangle = &rectangle;
+        }
+    }
 
     // Check if a waypoint is too close to any existing waypoint
     auto isTooCloseToExistingWaypoints = [&](const Waypoint& new_waypoint) -> bool {
@@ -275,39 +319,46 @@ std::vector<Waypoint> generateWaypoints(const std::vector<std::vector<cv::Point>
 
     // Generate waypoints for all rectangles
     for (const auto& rectangle : rectangles) {
-        std::vector<Waypoint> waypoints;
+        bool is_largest_polygon = (&rectangle == largest_rectangle);
 
-        // Transform rectangle vertices back to real-world coordinates
-        auto real_world_rectangle = transformToRealWorld(rectangle, image_size);
+        if (!is_largest_polygon) {
+            std::vector<Waypoint> waypoints;    
 
-        cv::Point2f center(0, 0);
+            // Transform rectangle vertices back to real-world coordinates
+            auto real_world_rectangle = transformToRealWorld(rectangle, image_size);
 
-        for (const auto& vertex : real_world_rectangle) {
-            center += cv::Point2f(vertex.x, vertex.y); // Accumulate vertex positions
-        }
-        center *= (1.0 / real_world_rectangle.size()); // Compute the center
+            cv::Point2f center(0, 0);
 
-        bool repeat_first = true;
-        Waypoint first_vertex;
-
-        for (const auto& vertex : real_world_rectangle) {
-            cv::Point2f vertex_f(vertex.x, vertex.y); // Convert to float point
-            cv::Point2f scaled_vertex = center + (vertex_f - center) * 0.9;
-
-            Waypoint new_waypoint = {scaled_vertex.x, scaled_vertex.y, zCoordinate};
-
-            if (repeat_first) {
-                first_vertex = new_waypoint;
-                repeat_first = false;
+            for (const auto& vertex : real_world_rectangle) {
+                center += cv::Point2f(vertex.x, vertex.y); // Accumulate vertex positions
             }
+            center *= (1.0 / real_world_rectangle.size()); // Compute the center
 
-            if (!isTooCloseToExistingWaypoints(new_waypoint)) {
-                    all_waypoints.push_back(new_waypoint);
+            bool repeat_first = true;
+            Waypoint first_vertex;
+
+            for (const auto& vertex : real_world_rectangle) {
+                cv::Point2f vertex_f(vertex.x, vertex.y); // Convert to float point
+
+                float distance = std::sqrt(std::pow(vertex_f.x - center.x, 2) + std::pow(vertex_f.y - center.y, 2));
+                float scale = 1 - (1 / distance);
+                cv::Point2f scaled_vertex = center + (vertex_f - center) * scale;
+
+                Waypoint new_waypoint = {scaled_vertex.x, scaled_vertex.y, zCoordinate};
+
+                if (repeat_first) {
+                    first_vertex = new_waypoint;
+                    repeat_first = false;
+                }
+
+                if (!isTooCloseToExistingWaypoints(new_waypoint)) {
+                        all_waypoints.push_back(new_waypoint);
+                }
             }
+            // Add waypoints to the global list
+            all_waypoints.insert(all_waypoints.end(), waypoints.begin(), waypoints.end());
+            all_waypoints.push_back(first_vertex);
         }
-        // Add waypoints to the global list
-        all_waypoints.insert(all_waypoints.end(), waypoints.begin(), waypoints.end());
-        all_waypoints.push_back(first_vertex);
     }
     return all_waypoints;
 }
@@ -528,6 +579,8 @@ private:
         std::vector<Waypoint> waypoints; // List to store all waypoints
         // Detect rectangles
         auto rectangles = detectShapes(wall_features, cloud_image);
+
+        //walls_in_room = isVertexOnEdge(rectangles, 3.0);
 
         // Generate waypoints
         std::vector<Waypoint> all_waypoints;
