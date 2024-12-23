@@ -32,7 +32,7 @@ struct Waypoint {
 std::string file_path = "/home/yuanyan/Downloads/LOAM/cloudGlobal.pcd";
 
 // Mode selection
-const bool walls_in_room = false;
+const bool walls_in_room = false; // false means there is no individual walls in the room
 
 // RANSAC parameters
 const double ignore_threshold = 0.01; // The value determines how many points of the whole cloud will be ignored.
@@ -46,7 +46,7 @@ const float image_area_threshold = 300.0; //should be dynamic with image size, c
 const float scale_down = 0.9; // Adjust this to control the distance between way points and bounding box (the boundary of the room).
 const float scale_up = 1.3; // Adjust this to control the distance between way points and walls in the room.
 
-const double center_distance_threshold = 2; // Filter out duplicate polygons
+const double center_distance_threshold = 5; // Filter out duplicate polygons
 
 float min_x, max_x, min_y, max_y;
 float width, height, aspect_ratio;
@@ -139,7 +139,7 @@ cv::Mat enhanceImage(const cv::Mat& dense_image, const cv::Mat& sparse_image) {
     cv::morphologyEx(refined_image, output_image, cv::MORPH_CLOSE, kernel);
 
     // Save the output image
-    cv::imwrite("output_image.png", output_image);
+    //cv::imwrite("output_image.png", output_image);
     cv::imshow("output_img", output_image);
     return output_image;
 }
@@ -166,7 +166,7 @@ std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::Poin
     for (const auto& contour : contours) {
         // Simplify the contour using approxPolyDP
         std::vector<cv::Point> simplified_contour;
-        double epsilon = 0.02 * cv::arcLength(contour, true); // Adjust epsilon for simplification, 0.02 for test.world
+        double epsilon = 0.03 * cv::arcLength(contour, true); // Adjust epsilon for simplification, 0.02 for test.world
         cv::approxPolyDP(contour, simplified_contour, epsilon, true);
 
         
@@ -287,17 +287,27 @@ std::vector<Waypoint> generateWaypoints(const std::vector<std::vector<cv::Point>
         }
         center *= (1.0 / real_world_rectangle.size()); // Compute the center
 
+        bool repeat_first = true;
+        Waypoint first_vertex;
+
         for (const auto& vertex : real_world_rectangle) {
             cv::Point2f vertex_f(vertex.x, vertex.y); // Convert to float point
             cv::Point2f scaled_vertex = center + (vertex_f - center) * 0.9;
 
             Waypoint new_waypoint = {scaled_vertex.x, scaled_vertex.y, zCoordinate};
+
+            if (repeat_first) {
+                first_vertex = new_waypoint;
+                repeat_first = false;
+            }
+
             if (!isTooCloseToExistingWaypoints(new_waypoint)) {
                     all_waypoints.push_back(new_waypoint);
             }
         }
         // Add waypoints to the global list
         all_waypoints.insert(all_waypoints.end(), waypoints.begin(), waypoints.end());
+        all_waypoints.push_back(first_vertex);
     }
     return all_waypoints;
 }
@@ -520,7 +530,12 @@ private:
         auto rectangles = detectShapes(wall_features, cloud_image);
 
         // Generate waypoints
-        std::vector<Waypoint> all_waypoints = generateWaypoints(rectangles, z_coordinate); 
+        std::vector<Waypoint> all_waypoints;
+        if (!walls_in_room) {
+            all_waypoints = generateWaypoints(rectangles, z_coordinate);
+        } else {
+            all_waypoints = generateWaypointsFromRectangles(rectangles, z_coordinate); 
+        }
 
         // Write waypoints to file
         writeWaypointsToFile(all_waypoints, "waypoints.txt");       
