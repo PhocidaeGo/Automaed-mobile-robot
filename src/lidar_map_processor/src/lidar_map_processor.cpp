@@ -255,38 +255,61 @@ std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::Poin
     return polygons;
 }
 
-// Function to calculate the minimum distance between a point and a line segment
-double pointToSegmentDistance(const cv::Point& p, const cv::Point& a, const cv::Point& b) {
-    double l2 = std::pow(b.x - a.x, 2) + std::pow(b.y - a.y, 2); // Length squared of the segment
-    if (l2 == 0.0) return std::hypot(p.x - a.x, p.y - a.y);     // Segment is a point
+double pointToSegmentDistance(const cv::Point& point, const cv::Point& line_start, const cv::Point& line_end) {
+    double x0 = point.x, y0 = point.y;
+    double x1 = line_start.x, y1 = line_start.y;
+    double x2 = line_end.x, y2 = line_end.y;
 
-    double t = std::max(0.0, std::min(1.0, ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / l2));
-    cv::Point projection(a.x + t * (b.x - a.x), a.y + t * (b.y - a.y));
-    return std::hypot(p.x - projection.x, p.y - projection.y);
+    double A = x0 - x1, B = y0 - y1, C = x2 - x1, D = y2 - y1;
+
+    double dot = A * C + B * D;
+    double len_sq = C * C + D * D;
+    double param = (len_sq != 0) ? dot / len_sq : -1;
+
+    double xx, yy;
+
+    if (param < 0) {
+        xx = x1;
+        yy = y1;
+    } else if (param > 1) {
+        xx = x2;
+        yy = y2;
+    } else {
+        xx = x1 + param * C;
+        yy = y1 + param * D;
+    }
+
+    double dx = x0 - xx;
+    double dy = y0 - yy;
+    return std::sqrt(dx * dx + dy * dy);
 }
 
-// Function to check if any vertex of a polygon is close to the edge of another polygon
+// Function to determine if any vertex of a polygon lies on the edge of another polygon
 bool isVertexOnEdge(const std::vector<std::vector<cv::Point>>& polygons, double threshold) {
     for (size_t i = 0; i < polygons.size(); ++i) {
         for (size_t j = 0; j < polygons.size(); ++j) {
-            if (i == j) continue; // Skip comparing the polygon with itself
+            if (i == j) continue; // Skip checking the polygon against itself
 
-            // Check each vertex of polygon[i] against edges of polygon[j]
-            for (const auto& vertex : polygons[i]) {
-                for (size_t k = 0; k < polygons[j].size(); ++k) {
-                    cv::Point a = polygons[j][k];
-                    cv::Point b = polygons[j][(k + 1) % polygons[j].size()]; // Wrap around to form a closed polygon
+            const auto& poly1 = polygons[i];
+            const auto& poly2 = polygons[j];
+
+            // Check each vertex of poly1 against all edges of poly2
+            for (const auto& vertex : poly1) {
+                for (size_t k = 0; k < poly2.size(); ++k) {
+                    cv::Point edge_start = poly2[k];
+                    cv::Point edge_end = poly2[(k + 1) % poly2.size()]; // Wrap around to the first point
 
                     // Calculate the distance from the vertex to the edge
-                    double distance = pointToSegmentDistance(vertex, a, b);
+                    double distance = pointToSegmentDistance(vertex, edge_start, edge_end);
+
                     if (distance < threshold) {
-                        return true; // A vertex is close to an edge
+                        return false; // A vertex of poly1 is close to an edge of poly2
                     }
                 }
             }
         }
     }
-    return false;
+    return true;
 }
 
 // Generate waypoints for a detected polygons. For multiple rooms and there is no wall inside
@@ -580,13 +603,15 @@ private:
         // Detect rectangles
         auto rectangles = detectShapes(wall_features, cloud_image);
 
-        //walls_in_room = isVertexOnEdge(rectangles, 3.0);
+        walls_in_room = isVertexOnEdge(rectangles, 5.0);
 
         // Generate waypoints
         std::vector<Waypoint> all_waypoints;
         if (!walls_in_room) {
+            RCLCPP_INFO(this->get_logger(), "walls_in_room: false");
             all_waypoints = generateWaypoints(rectangles, z_coordinate);
         } else {
+            RCLCPP_INFO(this->get_logger(), "walls_in_room: true");
             all_waypoints = generateWaypointsFromRectangles(rectangles, z_coordinate); 
         }
 
