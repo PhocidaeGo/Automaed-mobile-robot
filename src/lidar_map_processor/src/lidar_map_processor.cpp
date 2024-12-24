@@ -29,7 +29,7 @@ struct Waypoint {
 };
 
 // Input point cloud
-std::string file_path = "/home/yuanyan/Downloads/LOAM/cloudGlobal.pcd";
+std::string file_path = "test.pcd";
 
 // Mode selection
 bool walls_in_room = false; // false means there is no individual walls in the room
@@ -43,17 +43,15 @@ const int image_size = 500; // Adjust based on the map size, calculate the lengt
 const float z_coordinate = 0.1;
 const float image_area_threshold = 300.0; //should be dynamic with image size, can't use area in point cloud, since a random point in space can still be classifie to a wall as long as it's on the same plane.
 
-const float scale_down = 0.9; // Adjust this to control the distance between way points and bounding box (the boundary of the room).
-const float scale_up = 1.3; // Adjust this to control the distance between way points and walls in the room.
-
-const double center_distance_threshold = 2; // Filter out duplicate polygons
+const float clearance = 1.5; // The distance between way points and walls in the room.
+const float n_clearance = -0.6; // The distance between way points and walls in the room.
+const double center_distance_threshold = 2; // Filter out duplicate polygons, 2
 
 float min_x, max_x, min_y, max_y;
 float width, height, aspect_ratio;
 
 // Way point generator
-const double points_min_distance = 1; // meters, filter out duplicate way points
-
+const double points_min_distance = 0.5; // meters, filter out duplicate way points
 
 // CGAL typedefs
 typedef CGAL::Simple_cartesian<double> Kernel;
@@ -111,9 +109,6 @@ std::vector<cv::Point2f> transformToRealWorld(const std::vector<cv::Point>& rect
 cv::Mat enhanceImage(const cv::Mat& dense_image, const cv::Mat& sparse_image) {
     cv::Mat denoise_dense;
     cv::GaussianBlur(dense_image, denoise_dense, cv::Size(3, 3), 0); // better than medianBlur
-    //cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(2, 2)); // Kernel size
-    //cv::morphologyEx(dense_image, denoise_dense, cv::MORPH_CLOSE, kernel);
-    //cv:imshow("denoise_dense", denoise_dense);
 
     // Dilate the sparse image to create a region of interest (ROI)
     cv::Mat roi_mask;
@@ -140,7 +135,7 @@ cv::Mat enhanceImage(const cv::Mat& dense_image, const cv::Mat& sparse_image) {
 
     // Save the output image
     //cv::imwrite("output_image.png", output_image);
-    cv::imshow("output_img", output_image);
+    //cv::imshow("output_img", output_image);
     return output_image;
 }
 
@@ -169,7 +164,6 @@ std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::Poin
         double epsilon = 0.02 * cv::arcLength(contour, true); // Adjust epsilon for simplification, 0.02 for test.world
         cv::approxPolyDP(contour, simplified_contour, epsilon, true);
 
-        
         // Convert OpenCV contour to CGAL points
         std::vector<Point_2> contour_points;
         for (const auto& pt : simplified_contour) {
@@ -179,7 +173,6 @@ std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::Poin
         // Visualize the raw contour
         cv::drawContours(result_image, std::vector<std::vector<cv::Point>>{simplified_contour}, -1, cv::Scalar(255, 255, 255), 1);
 
-        /*
         // Compute convex hull of the points (optional but useful for noisy data)
         std::vector<Point_2> hull;
         CGAL::convex_hull_2(contour_points.begin(), contour_points.end(), std::back_inserter(hull));
@@ -195,9 +188,8 @@ std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::Poin
 
         // Create a CGAL polygon from the convex hull
         Polygon_2 polygon(hull.begin(), hull.end());
-        */
 
-        Polygon_2 polygon(contour_points.begin(), contour_points.end());
+        //Polygon_2 polygon(contour_points.begin(), contour_points.end());
         // Check if the polygon is valid
         if (polygon.size() >= 4) {
             // Calculate the area of the polygon
@@ -345,47 +337,52 @@ std::vector<Waypoint> generateWaypoints(const std::vector<std::vector<cv::Point>
         bool is_largest_polygon = (&rectangle == largest_rectangle);
 
         if (!is_largest_polygon) {
-            std::vector<Waypoint> waypoints;    
+            std::vector<Waypoint> waypoints;
 
             // Transform rectangle vertices back to real-world coordinates
             auto real_world_rectangle = transformToRealWorld(rectangle, image_size);
 
-            cv::Point2f center(0, 0);
+            size_t n = real_world_rectangle.size(); // Number of vertices
+            for (size_t i = 0; i < n; ++i) {
+                // Get previous, current, and next vertices
+                cv::Point2f prev_vertex = real_world_rectangle[(i + n - 1) % n];
+                cv::Point2f curr_vertex = real_world_rectangle[i];
+                cv::Point2f next_vertex = real_world_rectangle[(i + 1) % n];
 
-            for (const auto& vertex : real_world_rectangle) {
-                center += cv::Point2f(vertex.x, vertex.y); // Accumulate vertex positions
-            }
-            center *= (1.0 / real_world_rectangle.size()); // Compute the center
+                // Compute vectors from the current vertex to the adjacent vertices
+                cv::Point2f v1 = prev_vertex - curr_vertex; // Vector to previous vertex
+                cv::Point2f v2 = next_vertex - curr_vertex; // Vector to next vertex
 
-            bool repeat_first = true;
-            Waypoint first_vertex;
+                // Normalize edge vectors
+                v1 /= std::sqrt(v1.x * v1.x + v1.y * v1.y);
+                v2 /= std::sqrt(v2.x * v2.x + v2.y * v2.y);
 
-            for (const auto& vertex : real_world_rectangle) {
-                cv::Point2f vertex_f(vertex.x, vertex.y); // Convert to float point
 
-                float distance = std::sqrt(std::pow(vertex_f.x - center.x, 2) + std::pow(vertex_f.y - center.y, 2));
-                float scale = 1 - (1 / distance);
-                cv::Point2f scaled_vertex = center + (vertex_f - center) * scale;
-
-                Waypoint new_waypoint = {scaled_vertex.x, scaled_vertex.y, zCoordinate};
-
-                if (repeat_first) {
-                    first_vertex = new_waypoint;
-                    repeat_first = false;
+                // Compute the angular bisector by summing normalized vectors
+                cv::Point2f bisector = v1 + v2;
+                float bisector_length = std::sqrt(bisector.x * bisector.x + bisector.y * bisector.y);
+                if (bisector_length != 0) {
+                    bisector /= bisector_length; // Normalize bisector
                 }
 
+                // Compute the waypoint by moving along the bisector from the current vertex
+                cv::Point2f waypoint_position = curr_vertex + clearance * bisector;
+
+                // Create the waypoint
+                Waypoint new_waypoint = {waypoint_position.x, waypoint_position.y, zCoordinate};
+
+                // Check if the waypoint is valid and add it
                 if (!isTooCloseToExistingWaypoints(new_waypoint)) {
-                        all_waypoints.push_back(new_waypoint);
+                    waypoints.push_back(new_waypoint);
                 }
             }
+
             // Add waypoints to the global list
             all_waypoints.insert(all_waypoints.end(), waypoints.begin(), waypoints.end());
-            all_waypoints.push_back(first_vertex);
         }
     }
     return all_waypoints;
 }
-
 
 std::vector<Waypoint> generateWaypointsFromRectangles(const std::vector<std::vector<cv::Point>>& rectangles, float zCoordinate) {
 
@@ -428,41 +425,54 @@ std::vector<Waypoint> generateWaypointsFromRectangles(const std::vector<std::vec
         return false;
     };
 
-    // Generate waypoints for all rectangles
     for (const auto& rectangle : rectangles) {
-        bool is_bounding_box = (&rectangle == largest_rectangle);
-
+        bool is_largest_polygon = (&rectangle == largest_rectangle);
+        float distance = is_largest_polygon ? clearance : n_clearance;
+        
         std::vector<Waypoint> waypoints;
-        // Scale rectangle for waypoint generation
-        float scale_factor = is_bounding_box ? scale_down : scale_up;
-        cv::Point2f center(0, 0);
 
         // Transform rectangle vertices back to real-world coordinates
         auto real_world_rectangle = transformToRealWorld(rectangle, image_size);
 
-        for (const auto& vertex : real_world_rectangle) {
-            center += cv::Point2f(vertex.x, vertex.y); // Accumulate vertex positions
-        }
-        center *= (1.0 / real_world_rectangle.size()); // Compute the center
+        size_t n = real_world_rectangle.size(); // Number of vertices
+        for (size_t i = 0; i < n; ++i) {
+            // Get previous, current, and next vertices
+            cv::Point2f prev_vertex = real_world_rectangle[(i + n - 1) % n];
+            cv::Point2f curr_vertex = real_world_rectangle[i];
+            cv::Point2f next_vertex = real_world_rectangle[(i + 1) % n];
 
-        for (const auto& vertex : real_world_rectangle) {
-            cv::Point2f vertex_f(vertex.x, vertex.y); // Convert to float point
-            cv::Point2f scaled_vertex = center + (vertex_f - center) * scale_factor;
+            // Compute vectors from the current vertex to the adjacent vertices
+            cv::Point2f v1 = prev_vertex - curr_vertex; // Vector to previous vertex
+            cv::Point2f v2 = next_vertex - curr_vertex; // Vector to next vertex
 
-            // Check if the scaled vertex is inside the bounding box
-            if (isInsideBoundingBox(scaled_vertex)) {
-                Waypoint new_waypoint = {scaled_vertex.x, scaled_vertex.y, zCoordinate};
-                if (!isTooCloseToExistingWaypoints(new_waypoint)) {
-                    all_waypoints.push_back(new_waypoint);
-                }
+            // Normalize these vectors
+            v1 /= std::sqrt(v1.x * v1.x + v1.y * v1.y);
+            v2 /= std::sqrt(v2.x * v2.x + v2.y * v2.y);
+
+            // Compute the angular bisector by summing normalized vectors
+            cv::Point2f bisector = v1 + v2;
+            float bisector_length = std::sqrt(bisector.x * bisector.x + bisector.y * bisector.y);
+            if (bisector_length != 0) {
+                bisector /= bisector_length; // Normalize bisector
+            }
+
+            // Compute the waypoint by moving along the bisector from the current vertex
+            cv::Point2f waypoint_position = curr_vertex + distance * bisector;
+
+            // Create the waypoint
+            Waypoint new_waypoint = {waypoint_position.x, waypoint_position.y, zCoordinate};
+
+            // Check if the waypoint is valid and add it
+            if (!isTooCloseToExistingWaypoints(new_waypoint)) {
+                waypoints.push_back(new_waypoint);
             }
         }
+
         // Add waypoints to the global list
         all_waypoints.insert(all_waypoints.end(), waypoints.begin(), waypoints.end());
     }
     return all_waypoints;
 }
-
 
 // Visualize waypoints in the PCL visualizer
 void visualizeWaypoints(pcl::visualization::PCLVisualizer::Ptr &viewer, const std::vector<Waypoint> &waypoints) {
