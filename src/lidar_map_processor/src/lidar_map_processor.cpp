@@ -35,17 +35,17 @@ std::string file_path = "test.pcd";
 bool walls_in_room = false; // false means there is no individual walls in the room
 
 // RANSAC parameters
-const double ignore_threshold = 0.01; // The value determines how many points of the whole cloud will be ignored.
-const double distance_threshold = 0.05; // Too large is also not good
+const double ignore_threshold = 0.015; // The value determines how many points of the whole cloud will be ignored.
+const double distance_threshold = 0.05; // Too large is also not good, 0.05
 
 // CV parameters
-const int image_size = 500; // Adjust based on the map size, calculate the length each pixel represents in real world. It will also affect the kernel size.
+const int image_size = 200; // Adjust based on the map size, calculate the length each pixel represents in real world. It will also affect the kernel size.
 const float z_coordinate = 0.1;
-const float image_area_threshold = 300.0; //should be dynamic with image size, can't use area in point cloud, since a random point in space can still be classifie to a wall as long as it's on the same plane.
+const float image_area_threshold = 500.0; //should be dynamic with image size, can't use area in point cloud, since a random point in space can still be classifie to a wall as long as it's on the same plane.
 
 const float clearance = 1.5; // The distance between way points and walls in the room.
 const float n_clearance = -0.6; // The distance between way points and walls in the room.
-const double center_distance_threshold = 2; // Filter out duplicate polygons, 2
+const double center_distance_threshold = 5; // Filter out duplicate polygons, 2
 
 float min_x, max_x, min_y, max_y;
 float width, height, aspect_ratio;
@@ -107,12 +107,15 @@ std::vector<cv::Point2f> transformToRealWorld(const std::vector<cv::Point>& rect
 }
 
 cv::Mat enhanceImage(const cv::Mat& dense_image, const cv::Mat& sparse_image) {
+    cv::imshow("sparse_image", sparse_image);
+    cv::imshow("dense_image", dense_image);
+
     cv::Mat denoise_dense;
     cv::GaussianBlur(dense_image, denoise_dense, cv::Size(3, 3), 0); // better than medianBlur
 
     // Dilate the sparse image to create a region of interest (ROI)
     cv::Mat roi_mask;
-    cv::Mat kernel_mask = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 5)); 
+    cv::Mat kernel_mask = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(2, 2)); 
     cv::dilate(sparse_image, roi_mask, kernel_mask);
     //cv::imshow("mask", roi_mask);
 
@@ -130,8 +133,13 @@ cv::Mat enhanceImage(const cv::Mat& dense_image, const cv::Mat& sparse_image) {
     }
     //cv::imshow("refined_img", refined_image);
     cv::Mat output_image;
-    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(9, 9)); // Kernel size, 5 for test.world
-    cv::morphologyEx(refined_image, output_image, cv::MORPH_CLOSE, kernel);
+    cv::Mat kernel_mask_2 = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(1, 4)); 
+    cv::Mat kernel_mask_3 = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(4, 1)); 
+    cv::dilate(refined_image, output_image, kernel_mask_2);
+    cv::dilate(output_image, output_image, kernel_mask_3);
+        
+    //cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(5, 5)); // Kernel size, 5 for test.world
+    //cv::morphologyEx(refined_image, output_image, cv::MORPH_CLOSE, kernel);
 
     // Save the output image
     //cv::imwrite("output_image.png", output_image);
@@ -173,35 +181,12 @@ std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::Poin
         // Visualize the raw contour
         cv::drawContours(result_image, std::vector<std::vector<cv::Point>>{simplified_contour}, -1, cv::Scalar(255, 255, 255), 1);
 
-        // Compute convex hull of the points (optional but useful for noisy data)
-        std::vector<Point_2> hull;
-        CGAL::convex_hull_2(contour_points.begin(), contour_points.end(), std::back_inserter(hull));
-
-        // Draw convex hull
-        for (size_t j = 0; j < hull.size(); ++j) {
-            int x1 = static_cast<int>(hull[j].x());
-            int y1 = static_cast<int>(hull[j].y());
-            int x2 = static_cast<int>(hull[(j + 1) % hull.size()].x());
-            int y2 = static_cast<int>(hull[(j + 1) % hull.size()].y());
-            cv::line(result_image, cv::Point(x1, y1), cv::Point(x2, y2), cv::Scalar(0, 255, 0), 1);
-        }
-
-        // Create a CGAL polygon from the convex hull
-        Polygon_2 polygon(hull.begin(), hull.end());
-
-        //Polygon_2 polygon(contour_points.begin(), contour_points.end());
+        Polygon_2 polygon(contour_points.begin(), contour_points.end());
         // Check if the polygon is valid
         if (polygon.size() >= 4) {
             // Calculate the area of the polygon
-            double area = 0.0;
-            for (auto vertex = polygon.vertices_begin(); vertex != polygon.vertices_end(); ++vertex) {
-                auto next_vertex = std::next(vertex);
-                if (next_vertex == polygon.vertices_end()) {
-                    next_vertex = polygon.vertices_begin(); // Wrap around for the last edge
-                }
-                area += vertex->x() * next_vertex->y() - vertex->y() * next_vertex->x();
-            }
-            area = std::abs(area) / 2.0;
+            double area = abs(polygon.area());
+            
             if (area > image_area_threshold) {
                  // Calculate the center of the polygon
                 cv::Point2f center(0, 0);
@@ -233,14 +218,79 @@ std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::Poin
                     polygons.push_back(cv_polygon);
 
                     // Draw the polygon on the result image
-                    cv::polylines(result_image, cv_polygon, true, cv::Scalar(0, 255, 255), 3);
+                    cv::polylines(result_image, cv_polygon, true, cv::Scalar(0, 255, 255), 2);
                 }
             }
         }
+        
+        /*
+        // Compute convex hull of the points (optional but useful for noisy data)
+        std::vector<Point_2> hull;
+        CGAL::convex_hull_2(contour_points.begin(), contour_points.end(), std::back_inserter(hull));
+
+        // Draw convex hull
+        for (size_t j = 0; j < hull.size(); ++j) {
+            int x1 = static_cast<int>(hull[j].x());
+            int y1 = static_cast<int>(hull[j].y());
+            int x2 = static_cast<int>(hull[(j + 1) % hull.size()].x());
+            int y2 = static_cast<int>(hull[(j + 1) % hull.size()].y());
+            cv::line(result_image, cv::Point(x1, y1), cv::Point(x2, y2), cv::Scalar(0, 255, 0), 1);
+        }     
+
+        // Create a CGAL polygon from the convex hull
+        Polygon_2 convex_polygon(hull.begin(), hull.end());
+        // Check if the polygon is valid
+        if (convex_polygon.size() >= 4) {
+            // Calculate the area of the polygon
+            double area = 0.0;
+            for (auto vertex = convex_polygon.vertices_begin(); vertex != convex_polygon.vertices_end(); ++vertex) {
+                auto next_vertex = std::next(vertex);
+                if (next_vertex == convex_polygon.vertices_end()) {
+                    next_vertex = convex_polygon.vertices_begin(); // Wrap around for the last edge
+                }
+                area += vertex->x() * next_vertex->y() - vertex->y() * next_vertex->x();
+            }
+            area = std::abs(area) / 2.0;
+            if (area > image_area_threshold) {
+                 // Calculate the center of the polygon
+                cv::Point2f convex_center(0, 0);
+                for (auto vertex = convex_polygon.vertices_begin(); vertex != convex_polygon.vertices_end(); ++vertex) {
+                    convex_center.x += vertex->x();
+                    convex_center.y += vertex->y();
+                }
+                convex_center.x /= convex_polygon.size();
+                convex_center.y /= convex_polygon.size();
+
+                // Check if this polygon's center is too close to any existing center
+                bool is_duplicate = false;
+                for (const auto& existing_center : polygon_centers) {
+                    if (cv::norm(convex_center - existing_center) < center_distance_threshold) {
+                        is_duplicate = true;
+                        break;
+                    }
+                }
+
+                if (!is_duplicate) {
+                    // Add this polygon's center to the list of centers
+                    polygon_centers.push_back(convex_center);
+
+                    // Convert CGAL polygon to OpenCV polygon
+                    std::vector<cv::Point> cv_convex_polygon;
+                    for (auto vertex = convex_polygon.vertices_begin(); vertex != convex_polygon.vertices_end(); ++vertex) {
+                        cv_convex_polygon.emplace_back(vertex->x(), vertex->y());
+                    }
+                    polygons.push_back(cv_convex_polygon);
+
+                    // Draw the polygon on the result image
+                    cv::polylines(result_image, cv_convex_polygon, true, cv::Scalar(0, 255, 255), 2);
+                }
+            }
+        }
+        */
     }
 
     // Visualize the result
-    //cv::imshow("Binary Image", binary_image);
+    cv::imshow("Binary Image", binary_image);
     cv::imshow("Detected Polygons", result_image);
     cv::waitKey(0);
 
@@ -591,7 +641,7 @@ private:
                 viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_COLOR,
                                                             1.0, 0.0, 0.0, plane_name); //Showed in red
 
-            } else if (normal.dot(Eigen::Vector3f(0, 0, -1)) > 0.9) {
+            } else if (normal.dot(Eigen::Vector3f(0, 0, -1)) > 0.95) {
                 RCLCPP_INFO(this->get_logger(), "Detected horizontal ceiling at centroid (%.2f, %.2f, %.2f)",
                             centroid[0], centroid[1], centroid[2]);
                 viewer->addPointCloud<pcl::PointXYZ>(plane_cloud, plane_name);
