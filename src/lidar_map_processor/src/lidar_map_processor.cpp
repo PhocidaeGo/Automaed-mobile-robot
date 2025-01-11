@@ -10,6 +10,8 @@
 #include <pcl/common/common.h>
 #include <pcl/visualization/pcl_visualizer.h>
 #include <pcl_conversions/pcl_conversions.h>
+#include <pcl/filters/statistical_outlier_removal.h>
+#include <pcl/filters/radius_outlier_removal.h>
 #include <sensor_msgs/msg/point_cloud2.hpp>
 #include <vector>
 #include <algorithm> // For sorting
@@ -30,7 +32,7 @@ struct Waypoint {
 
 // Input point cloud
 
-std::string file_path = "test1.pcd";
+std::string file_path = "test.pcd";
 
 // Mode selection
 bool walls_in_room = false; // false means there is no individual walls in the room
@@ -40,7 +42,7 @@ const double ignore_threshold = 0.015; // The value determines how many points o
 const double distance_threshold = 0.05; // Too large is also not good, 0.05
 
 // CV parameters
-const int image_size = 1000; // Adjust based on the map size, calculate the length each pixel represents in real world. It will also affect the kernel size.
+const int image_size = 200; // Adjust based on the map size, calculate the length each pixel represents in real world. It will also affect the kernel size.
 int image_height = 0;
 
 const float z_coordinate = 0.1;
@@ -60,6 +62,27 @@ const double points_min_distance = 0.5; // meters, filter out duplicate way poin
 typedef CGAL::Simple_cartesian<double> Kernel;
 typedef Kernel::Point_2 Point_2;
 typedef CGAL::Polygon_2<Kernel> Polygon_2;
+
+pcl::PointCloud<pcl::PointXYZ>::Ptr cleanMap(const pcl::PointCloud<pcl::PointXYZ>::Ptr& map) {
+    // Step 1: Apply Statistical Outlier Removal
+    pcl::PointCloud<pcl::PointXYZ>::Ptr sor_filtered(new pcl::PointCloud<pcl::PointXYZ>());
+    pcl::StatisticalOutlierRemoval<pcl::PointXYZ> sor;
+    sor.setInputCloud(map);
+    sor.setMeanK(10); // Number of neighbors to analyze for each point
+    sor.setStddevMulThresh(1.0); // Threshold multiplier for standard deviation
+    sor.filter(*sor_filtered);
+
+    // Step 2: Apply Radius Outlier Removal
+    pcl::PointCloud<pcl::PointXYZ>::Ptr radius_filtered(new pcl::PointCloud<pcl::PointXYZ>());
+    pcl::RadiusOutlierRemoval<pcl::PointXYZ> ror;
+    ror.setInputCloud(sor_filtered);
+    ror.setRadiusSearch(0.5); // Search radius
+    ror.setMinNeighborsInRadius(3); // Minimum number of neighbors in the radius
+    ror.filter(*radius_filtered);
+
+    // Return the cleaned map
+    return sor_filtered;
+}
 
 cv::Mat projectPointCloudToBinaryImage(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, int image_size, float range = 20.0) {
     if (image_height == 0){
@@ -173,9 +196,6 @@ cv::Mat enhanceImage(const cv::Mat& dense_image, const cv::Mat& sparse_image) {
 
 std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, cv::Mat dense_image) {
     cv::Mat sparse_image = projectPointCloudToBinaryImage(cloud, image_size);
-    //cv::imshow("dense image", dense_image);
-    //cv::imshow("sparse image", sparse_image);
-    cv::waitKey(0);
 
     // Enhance the sparse image with the dense image
     cv::Mat binary_image = enhanceImage(dense_image, sparse_image);
@@ -591,8 +611,11 @@ private:
         }
         RCLCPP_INFO(this->get_logger(), "Loaded %lu points from %s", cloud->size(), file_path.c_str());
 
-        cv::Mat cloud_image = projectPointCloudToBinaryImage(cloud, image_size);
-        //cv::imshow("Cloud image", cloud_image);
+        // Denoising point cloud
+        pcl::PointCloud<pcl::PointXYZ>::Ptr clean_cloud = cleanMap(cloud);
+        cv::Mat cloud_image = projectPointCloudToBinaryImage(clean_cloud, image_size);
+        //cv::imshow("cleaned_pcd", cloud_image);
+        //cv::waitKey(0);
 
         // Save the processed file as a .ply
         /*
@@ -607,8 +630,8 @@ private:
         // Prepare visualizer
         pcl::visualization::PCLVisualizer::Ptr viewer(new pcl::visualization::PCLVisualizer("Extracted Planes"));
         viewer->setBackgroundColor(0, 0, 0);
-        viewer->addPointCloud<pcl::PointXYZ>(cloud, "original_cloud");
-        viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, "original_cloud");
+        viewer->addPointCloud<pcl::PointXYZ>(cloud, "cleaned_map");
+        viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, "cleaned_map");
 
         // Plane model segmentation for feature exraction of walls and ceiling. Ref: https://pcl.readthedocs.io/projects/tutorials/en/latest/planar_segmentation.html
         // RANSAC method
@@ -654,12 +677,15 @@ private:
             float c = coefficients->values[2];
             //float d = coefficients->values[3];
             Eigen::Vector3f normal(a, b, c);
+            normal.normalize();
 
             std::string plane_name = "Plane_" + std::to_string(i);
-            if (std::abs(normal.dot(Eigen::Vector3f(0, 0, 1))) < 0.2) {
+            if (std::abs(normal.dot(Eigen::Vector3f(0, 0, 1))) < 0.2) { //<0.2 for gazebo pcd files
 
-                RCLCPP_INFO(this->get_logger(), "Detected vertical wall at centroid (%.2f, %.2f, %.2f)",
-                            centroid[0], centroid[1], centroid[2]);
+                //RCLCPP_INFO(this->get_logger(), "Detected vertical wall at centroid (%.2f, %.2f, %.2f)",
+                //            centroid[0], centroid[1], centroid[2]);
+                RCLCPP_INFO(this->get_logger(), "Noraml vector (%.2f, %.2f, %.2f)",
+                            normal[0], normal[1], normal[2]);
 
                 // Save the wall point cloud to wall_features
                 *wall_features += *plane_cloud;
