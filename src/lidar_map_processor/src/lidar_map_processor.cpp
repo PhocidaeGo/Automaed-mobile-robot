@@ -29,7 +29,8 @@ struct Waypoint {
 };
 
 // Input point cloud
-std::string file_path = "test.pcd";
+
+std::string file_path = "test1.pcd";
 
 // Mode selection
 bool walls_in_room = false; // false means there is no individual walls in the room
@@ -39,7 +40,9 @@ const double ignore_threshold = 0.015; // The value determines how many points o
 const double distance_threshold = 0.05; // Too large is also not good, 0.05
 
 // CV parameters
-const int image_size = 200; // Adjust based on the map size, calculate the length each pixel represents in real world. It will also affect the kernel size.
+const int image_size = 1000; // Adjust based on the map size, calculate the length each pixel represents in real world. It will also affect the kernel size.
+int image_height = 0;
+
 const float z_coordinate = 0.1;
 const float image_area_threshold = 500.0; //should be dynamic with image size, can't use area in point cloud, since a random point in space can still be classifie to a wall as long as it's on the same plane.
 
@@ -59,38 +62,58 @@ typedef Kernel::Point_2 Point_2;
 typedef CGAL::Polygon_2<Kernel> Polygon_2;
 
 cv::Mat projectPointCloudToBinaryImage(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, int image_size, float range = 20.0) {
-    // Determine the bounding box of the point cloud
-    min_x = std::numeric_limits<float>::max(), max_x = std::numeric_limits<float>::lowest();
-    min_y = std::numeric_limits<float>::max(), max_y = std::numeric_limits<float>::lowest();
+    if (image_height == 0){
+        // Determine the bounding box of the point cloud
+        min_x = std::numeric_limits<float>::max(), max_x = std::numeric_limits<float>::lowest();
+        min_y = std::numeric_limits<float>::max(), max_y = std::numeric_limits<float>::lowest();
 
-    for (const auto& point : cloud->points) {
-        if (point.x < min_x) min_x = point.x;
-        if (point.x > max_x) max_x = point.x;
-        if (point.y < min_y) min_y = point.y;
-        if (point.y > max_y) max_y = point.y;
-    }
-
-    // Compute the dimensions of the point cloud
-    width = max_x - min_x;
-    height = max_y - min_y;
-
-    // Compute the aspect ratio and determine image height
-    aspect_ratio = height / width;
-    int image_height = static_cast<int>(image_size * aspect_ratio);
-
-    // Create a blank binary image
-    cv::Mat binary_image = cv::Mat::zeros(image_height, image_size, CV_8UC1);
-
-    // Project each 3D point to 2D and populate the binary image
-    for (const auto& point : cloud->points) {
-        int x = static_cast<int>((point.x - min_x) * (image_size / width));  // Map to image space (x-axis)
-        int y = static_cast<int>((point.y - min_y) * (image_height / height)); // Map to image space (y-axis)
-        if (x >= 0 && x < image_size && y >= 0 && y < image_height) {
-            binary_image.at<uchar>(y, x) = 255;
+        for (const auto& point : cloud->points) {
+            if (point.x < min_x) min_x = point.x;
+            if (point.x > max_x) max_x = point.x;
+            if (point.y < min_y) min_y = point.y;
+            if (point.y > max_y) max_y = point.y;
         }
-    }
 
-    return binary_image;
+        // Compute the dimensions of the point cloud
+        width = max_x - min_x;
+        height = max_y - min_y;
+
+        // Compute the aspect ratio and determine image height
+        aspect_ratio = height / width;
+        image_height = static_cast<int>(image_size * aspect_ratio);
+
+        // Create a blank binary image
+        cv::Mat binary_image = cv::Mat::zeros(image_height, image_size, CV_8UC1);
+
+        // Project each 3D point to 2D and populate the binary image
+        for (const auto& point : cloud->points) {
+            int x = static_cast<int>((point.x - min_x) * (image_size / width));  // Map to image space (x-axis)
+            int y = static_cast<int>((point.y - min_y) * (image_height / height)); // Map to image space (y-axis)
+            if (x >= 0 && x < image_size && y >= 0 && y < image_height) {
+                binary_image.at<uchar>(y, x) = 255;
+            }
+        }
+        //cv::imshow("image from pcd",binary_image);
+        //cv::waitKey(0);
+
+        return binary_image;
+    } else {
+        // Create a blank binary image
+        cv::Mat binary_image = cv::Mat::zeros(image_height, image_size, CV_8UC1);
+
+        // Project each 3D point to 2D and populate the binary image
+        for (const auto& point : cloud->points) {
+            int x = static_cast<int>((point.x - min_x) * (image_size / width));  // Map to image space (x-axis)
+            int y = static_cast<int>((point.y - min_y) * (image_height / height)); // Map to image space (y-axis)
+            if (x >= 0 && x < image_size && y >= 0 && y < image_height) {
+                binary_image.at<uchar>(y, x) = 255;
+            }
+        }
+        //cv::imshow("image from pcd",binary_image);
+        //cv::waitKey(0);
+
+        return binary_image;
+    }
 }
 
 std::vector<cv::Point2f> transformToRealWorld(const std::vector<cv::Point>& rectangle, // Map the 2D image coordinates back to real-world coordinates
@@ -112,6 +135,7 @@ cv::Mat enhanceImage(const cv::Mat& dense_image, const cv::Mat& sparse_image) {
 
     cv::Mat denoise_dense;
     cv::GaussianBlur(dense_image, denoise_dense, cv::Size(3, 3), 0); // better than medianBlur
+    //cv::imshow("denoise_dense", denoise_dense);
 
     // Dilate the sparse image to create a region of interest (ROI)
     cv::Mat roi_mask;
@@ -151,6 +175,7 @@ std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::Poin
     cv::Mat sparse_image = projectPointCloudToBinaryImage(cloud, image_size);
     //cv::imshow("dense image", dense_image);
     //cv::imshow("sparse image", sparse_image);
+    cv::waitKey(0);
 
     // Enhance the sparse image with the dense image
     cv::Mat binary_image = enhanceImage(dense_image, sparse_image);
@@ -290,7 +315,7 @@ std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::Poin
     }
 
     // Visualize the result
-    cv::imshow("Binary Image", binary_image);
+    //cv::imshow("Binary Image", binary_image);
     cv::imshow("Detected Polygons", result_image);
     cv::waitKey(0);
 
@@ -570,18 +595,20 @@ private:
         //cv::imshow("Cloud image", cloud_image);
 
         // Save the processed file as a .ply
+        /*
         std::string output_file = "/home/yuanyan/autonomous-exploration-with-lio-sam/src/vehicle_simulator/mesh/test/preview/pointcloud.ply";
         if (pcl::io::savePLYFile(output_file, *cloud) == -1) {
             RCLCPP_ERROR(this->get_logger(), "Couldn't write file: %s", output_file.c_str());
         } else {
             RCLCPP_INFO(this->get_logger(), "Processed cloud saved as: %s", output_file.c_str());
         }
+        */
 
         // Prepare visualizer
         pcl::visualization::PCLVisualizer::Ptr viewer(new pcl::visualization::PCLVisualizer("Extracted Planes"));
         viewer->setBackgroundColor(0, 0, 0);
-        //viewer->addPointCloud<pcl::PointXYZ>(cloud, "original_cloud");
-        //viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, "original_cloud");
+        viewer->addPointCloud<pcl::PointXYZ>(cloud, "original_cloud");
+        viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, "original_cloud");
 
         // Plane model segmentation for feature exraction of walls and ceiling. Ref: https://pcl.readthedocs.io/projects/tutorials/en/latest/planar_segmentation.html
         // RANSAC method
@@ -598,7 +625,7 @@ private:
         pcl::ExtractIndices<pcl::PointXYZ> extract;
         int i = 0;
         
-        // Ensures the segmentation loop does not continue indefinitely. If the remaining cloud becomes too small (less than 30% of the original cloud), the loop stops.
+        // Ensures the segmentation loop does not continue indefinitely. If the remaining cloud becomes too small, the loop stops.
         while (cloud->size() > ignore_threshold * cloud_filtered->size()) {
             // Segment the largest planar component of rest of cloed
             seg.setInputCloud(cloud);
@@ -647,6 +674,7 @@ private:
                 viewer->addPointCloud<pcl::PointXYZ>(plane_cloud, plane_name);
                 viewer->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_COLOR,
                                                             0.0, 1.0, 0.0, plane_name); //Showed in green
+                
 
             } else {
                 RCLCPP_INFO(this->get_logger(), "Other plane detected.");
@@ -657,11 +685,12 @@ private:
             extract.filter(*cloud_filtered);
             cloud.swap(cloud_filtered);
             i++;
-            }
+        }
         
         std::vector<Waypoint> waypoints; // List to store all waypoints
         // Detect rectangles
         auto rectangles = detectShapes(wall_features, cloud_image);
+        RCLCPP_INFO(this->get_logger(), "Shapes detected");
 
         walls_in_room = isVertexOnEdge(rectangles, 5.0);
 
