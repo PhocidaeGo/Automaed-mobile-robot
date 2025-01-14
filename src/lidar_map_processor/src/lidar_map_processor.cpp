@@ -63,7 +63,7 @@ typedef CGAL::Simple_cartesian<double> Kernel;
 typedef Kernel::Point_2 Point_2;
 typedef CGAL::Polygon_2<Kernel> Polygon_2;
 
-pcl::PointCloud<pcl::PointXYZ>::Ptr cleanMap(const pcl::PointCloud<pcl::PointXYZ>::Ptr& map) {
+pcl::PointCloud<pcl::PointXYZ>::Ptr cleanMap(const pcl::PointCloud<pcl::PointXYZ>::Ptr& map) { //Use cloudCompare to adjust parameters
     // Step 1: Apply Statistical Outlier Removal
     pcl::PointCloud<pcl::PointXYZ>::Ptr sor_filtered(new pcl::PointCloud<pcl::PointXYZ>());
     pcl::StatisticalOutlierRemoval<pcl::PointXYZ> sor;

@@ -101,7 +101,9 @@ colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
    
    Result: If kernel size is proper, it works well.
 
-   **TODO 4**: *(Current)* The RANSAC method may have difficulties dealing with large scale maps, since if the noise is too dense in the map, the RANSAC may evaluate the points (from walls and noise in the air) at same level as a plane which is parallel to floor, hence the walls can not be recognized. Need to clip the big cloud into multiple small clouds at first.
+   **TODO 4**: *(Current)* The RANSAC method may have difficulties dealing with large scale maps, since if the noise is too dense in the map, the RANSAC may evaluate the points (from walls and noise in the air) at same level as a plane which is parallel to floor, hence the walls can not be recognized. Need to crop the large cloud into multiple small clouds at first.
+
+   **TODO 5**: *(Current)* The RANSAC method may have difficulties dealing with maps from different equipments(lidars). Need to fine-tune the distance parameters each time.
 
 5. **Launch File Transmitter**:
 
