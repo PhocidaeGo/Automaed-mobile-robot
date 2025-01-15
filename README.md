@@ -1,13 +1,15 @@
 
-# Autonomous Exploration with LIO-SAM
+# Automaed Moblie Robot
 
-This repository contains the code and instructions for setting up and running the autonomous exploration framework with the following modules:
+This repository contains the code of implementation of a robot which can fully automated explore the environment while doing SLAM, it has also capability to process the point cloud from SLAM. 
+
+Instructions for setting up and running the autonomous exploration framework with the following modules:
 
 1. **Autonomy Basic**: [Autonomous Exploration Development Environment](https://github.com/HongbiaoZ/autonomous_exploration_development_environment)
 2. **Far Planner**: [Far Planner](https://github.com/MichaelFYang/far_planner)
 3. **LIO-SAM**: [LIO-SAM](https://github.com/TixiaoShan/LIO-SAM)
 4. **TARE Planner**: [TARE Planner](https://github.com/caochao39/tare_planner)
-
+5. **Superpoint Transformer**: [SPT](https://github.com/drprojects/superpoint_transformer/tree/master)
 ## Installation
 
 ### Dependencies
@@ -42,7 +44,7 @@ colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
 ```
 
 ### Step 3: Install SPT
-Make sure GPU is running with CUDA 11.8 or 12.1. For Ubuntu 22.04 with RTX 4070, follow instruction https://gist.github.com/MihailCosmin/affa6b1b71b43787e9228c25fe15aeba
+Make sure that your GPU is running with CUDA 11.8 or 12.1. For Ubuntu 22.04 with RTX 4070, follow this instruction https://gist.github.com/MihailCosmin/affa6b1b71b43787e9228c25fe15aeba
 
 Then clone the repo and install dependencies:
 ```bash
@@ -52,7 +54,7 @@ cd spt
 ./install.sh
 ```
 
-If have problems installing FRNN, try following:
+If you have problems installing FRNN, try following:
 ```bash
 git clone --recursive https://github.com/lxxue/FRNN.git
 # For RTX 4070
@@ -137,18 +139,15 @@ pip install -e .
 
    For pcd files, use CloudCompare to convert and set RGB color. Check the coordinate in original files, to align z-axis with correct direction, in CloudCompare:
 
-   Go to Edit > Apply Transformation.
-
-   In the transformation matrix dialog, set the values to reflect a flip in the Z-axis:
+   Go to Edit -> Apply Transformation. In the transformation matrix dialog, set the values to reflect a flip in the Z-axis. This matrix effectively flips the Z-axis direction:
    ```bash
       1   0   0   0
       0   1   0   0
       0   0  -1   0
       0   0   0   1
    ```
-   This matrix multiplies the Z-coordinates by -1, effectively flipping the Z-axis direction.
 
-   Make sure that the ply files has following head:
+   Also make sure that the ply files has following head:
    ```bash
    property float x
    property float y
