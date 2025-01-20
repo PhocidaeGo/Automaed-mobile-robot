@@ -86,6 +86,7 @@
         "__tree": "cpp",
         "queue": "cpp",
         "stack": "cpp",
-        "__nullptr": "cpp"
+        "__nullptr": "cpp",
+        "ranges": "cpp"
     }
 }

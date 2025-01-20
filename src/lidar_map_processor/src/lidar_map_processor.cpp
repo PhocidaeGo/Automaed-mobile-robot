@@ -31,8 +31,10 @@ struct Waypoint {
 };
 
 // Input point cloud
+std::string file_path = "/home/yuanyan/autonomous-exploration-with-lio-sam/maps/test.pcd";
 
-std::string file_path = "test.pcd";
+// Use neural network preprcessed: True
+bool spt = false;
 
 // Mode selection
 bool walls_in_room = false; // false means there is no individual walls in the room
@@ -195,10 +197,15 @@ cv::Mat enhanceImage(const cv::Mat& dense_image, const cv::Mat& sparse_image) {
 }
 
 std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, cv::Mat dense_image) {
-    cv::Mat sparse_image = projectPointCloudToBinaryImage(cloud, image_size);
+    cv::Mat binary_image;
+    if(spt){
+        binary_image = projectPointCloudToBinaryImage(cloud, image_size);
+    } else{
+        cv::Mat sparse_image = projectPointCloudToBinaryImage(cloud, image_size);
 
-    // Enhance the sparse image with the dense image
-    cv::Mat binary_image = enhanceImage(dense_image, sparse_image);
+        // Enhance the sparse image with the dense image
+        binary_image = enhanceImage(dense_image, sparse_image);
+    }
 
     // Detect contours in the binary image
     std::vector<std::vector<cv::Point>> contours;
@@ -208,6 +215,7 @@ std::vector<std::vector<cv::Point>> detectShapes(const pcl::PointCloud<pcl::Poin
     std::vector<std::vector<cv::Point>> polygons;
     cv::Mat result_image = cv::Mat::zeros(binary_image.size(), CV_8UC3);
     cv::cvtColor(binary_image, result_image, cv::COLOR_GRAY2BGR);
+    
 
     std::vector<cv::Point2f> polygon_centers;     // List to store centers of polygons
 
@@ -604,8 +612,15 @@ private:
 
         // Load the PCD file
         pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>());
+        pcl::PointCloud<pcl::PointXYZ>::Ptr sptCloud(new pcl::PointCloud<pcl::PointXYZ>());
+
         //Read the .pcd file and store into the cloud object (of type pcl::PointCloud<pcl::PointXYZ>).
         if (pcl::io::loadPCDFile<pcl::PointXYZ>(file_path, *cloud) == -1) {
+            RCLCPP_ERROR(this->get_logger(), "Couldn't read file: %s", file_path.c_str());
+            return;
+        }
+
+        if (pcl::io::loadPCDFile<pcl::PointXYZ>(file_path, *sptCloud) == -1) {
             RCLCPP_ERROR(this->get_logger(), "Couldn't read file: %s", file_path.c_str());
             return;
         }
@@ -714,12 +729,15 @@ private:
         }
         
         std::vector<Waypoint> waypoints; // List to store all waypoints
+
         // Detect rectangles
-        auto rectangles = detectShapes(wall_features, cloud_image);
+
+        //auto rectangles = detectShapes(sptCloud, cloud_image); //spt
+        auto rectangles = detectShapes(wall_features, cloud_image); //RANSAC
+
         RCLCPP_INFO(this->get_logger(), "Shapes detected");
 
         walls_in_room = isVertexOnEdge(rectangles, 5.0);
-
         // Generate waypoints
         std::vector<Waypoint> all_waypoints;
         if (!walls_in_room) {
