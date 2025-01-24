@@ -1,5 +1,5 @@
 
-# Automaed Moblie Robot
+# Automated Moblie Robot
 
 This repository contains the code of implementation of a robot which can fully automated explore the environment while doing SLAM, it has also capability to process the point cloud from SLAM. 
 
@@ -10,6 +10,37 @@ Instructions for setting up and running the autonomous exploration framework wit
 3. **LIO-SAM**: [LIO-SAM](https://github.com/TixiaoShan/LIO-SAM)
 4. **TARE Planner**: [TARE Planner](https://github.com/caochao39/tare_planner)
 5. **Superpoint Transformer**: [SPT](https://github.com/drprojects/superpoint_transformer/tree/master)
+
+## Description
+### 1. Exploration and SLAM
+The robot starts by exploring the enviroment using AEDE; meanwhile LIO-SAM is running in the background to construct map of this environment.
+
+### 2. Navigation
+The AEDE provides basic autonomy (including coliision avoidance, traversability analysis and neighborhood navigation) and far_planner for distant goals in space.
+
+### 3. Map processing
+For the small and simple environment, RANSAC-menthod should be enough to detect all the walls in the building. For the large and complex environment, SPT is recomanded, to use it, build a conda environment on desktop at first, then use file transmitter to transfer the PLY from robot to desktop. It performs semantic segmentation for the point cloud on GPU, semantic information can be used for navigation, and help the robot to understand the environment. 
+
+An example can be the following semantic map of an office, all objects with labels are abstacted to a polygon in the 2D map, the robot can access their positions by reading vertices of these polygons.
+
+<p align="ledt">
+  <img src="media/office semantic map.png" alt="Semantic map" height="500">
+</p>
+
+### 4. Waypoint generation
+In this task, the robot is asked to inspect all the walls in the room, if you used RANSAC method in last step, the code will perform polygon dection for the map and generate waypoints by scale the polygons.
+
+If you used SPT in last step, the robot will use lines to fit the features and generate waypoints for inspection. The false waypoint-lines will be filter out by using floor_mask. Then the waypoints will be reordered for better route planning. Following are some examples:
+
+<div style="display: flex; gap: 20px;">
+  <img src="media/test waypoints.png" alt="Image 1" style="height: 500px;">
+  <img src="media/indoor waypoints.png" alt="Image 2" style="height: 500px;">
+  <img src="media/test indoor waypoints.png" alt="Image 3" style="height: 500px;">
+</div>
+
+### 5. Control robot
+Publish waypoints to corresponding ROS topic.
+
 ## Installation
 
 ### Dependencies
@@ -25,7 +56,7 @@ sudo apt install libgtsam-dev libgtsam-unstable-dev
 sudo apt-get install libcgal-dev
 ```
 
-### Step 1: Install the Required Modules
+### Step 1. Install the Required Modules
 
 Clone the repositories for the modules:
 
@@ -34,7 +65,7 @@ git clone https://gitlab.lrz.de/00000000014B950F/autonomous-exploration-with-lio
 colcon build
 ```
 
-### Step 2: Install TARE Planner
+### Step 2. Install TARE Planner
 
 ```bash
 git clone https://github.com/caochao39/tare_planner.git
@@ -43,7 +74,7 @@ git checkout humble-jazzy
 colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release
 ```
 
-### Step 3: Install SPT
+### Step 3. Install SPT
 Make sure that your GPU is running with CUDA 11.8 or 12.1. For Ubuntu 22.04 with RTX 4070, follow this instruction https://gist.github.com/MihailCosmin/affa6b1b71b43787e9228c25fe15aeba
 
 Then clone the repo and install dependencies:
@@ -74,7 +105,7 @@ pip install -e .
 
 ## Usage
 
-1. **Launch Gazebo Simulation and Autonomy Basic**:
+### 1. **Launch Gazebo Simulation and Autonomy Basic**:
 
    ```bash
    cd autonomous-exploration-with-lio-sam
@@ -87,7 +118,7 @@ pip install -e .
    ```
    Now you should see gazebo simulation and autonomy_basic visualized in RViz.
 
-2. **Launch LIO-SAM**:
+### 2. **Launch LIO-SAM**:
 
    ```bash
    cd autonomous-exploration-with-lio-sam
@@ -96,7 +127,7 @@ pip install -e .
    ```
    Now you should see LIO-SAM visualized in RViz.
 
-3. **Launch tare_planner**:
+### 3. **Launch tare_planner**:
 
    ```bash
    cd tare_planner
@@ -105,7 +136,7 @@ pip install -e .
    ```
    Now you should see autonomous exploration in action.
 
-4. **Launch Map Processor**:
+### 4. **Launch Map Processor (RANSAC method)**:
 
    ```bash
    source install/setup.bash
@@ -118,26 +149,26 @@ pip install -e .
 
    Then CGAL is applied to detect the polygons in the binary image, which is the representaion of the environment.
 
-   **Option 1**: *(Finished)* use the functions of planes to draw lines that can be easily detected by CGAL while generator less noise.
+   The RANSAC method may have difficulties dealing with large scale maps, since if the noise is too dense in the map, the RANSAC may evaluate the points (from walls and noise in the air) at same level as a plane which is parallel to floor, hence the walls can not be recognized. Need to crop the large cloud into multiple small clouds at first.It also have difficulties dealing with maps from different equipments(lidars). Need to fine-tune the distance parameters each time.
+
+   **Attempt 1**: *(Finished)* use the functions of planes to draw lines that can be easily detected by CGAL while generator less noise.
 
    Result: NOT GOOD since any random point in space can be classifie to a wall as long as it's on the same plane, such outliers will make the boundary of a plane exetremly large.
 
-   **Option 2**: *(Not needed)* use DL-based detection for polygon detection.
+   **Attempt 2**: *(Not needed)* use DL-based detection for polygon detection.
 
    Result: DL-based detetcion can be robust, but our goal here is generating coordinates of way points, which requires accurate bounding box of the wall, while neuron networks' bounding box is not accurate. But with some workaround it should work well.
    Mask R-CNN is an option, but running it requirs CPU(i7), GPU(RTX2080Ti), RAM(8G), the inference should be done on desktop or cloud if robot can send the point cloud file to them.
 
-   **Option 3**: *(Current)* use image compressed from original cloud and a mask generated by filtered cloud to detection. Duplicate polygons and way points will be filter out.
+   **Attempt 3**: *(Current)* use image compressed from original cloud and a mask generated by filtered cloud to detection. Duplicate polygons and way points will be filter out.
    
    Result: If kernel size is proper, it works well.
 
-   **Option 4**: *(Current)* The RANSAC method may have difficulties dealing with large scale maps, since if the noise is too dense in the map, the RANSAC may evaluate the points (from walls and noise in the air) at same level as a plane which is parallel to floor, hence the walls can not be recognized. Need to crop the large cloud into multiple small clouds at first.
+   **Attempt 4**: *(Current)* Use neural network to handel point cloud and feature extraction directly. For this project, the superpoint_transformer(https://github.com/drprojects/superpoint_transformer/tree/master) and pretrained models(https://zenodo.org/records/8042712) are used. If only limited GPU memory is availiable(RTX 4070 in this case), check memory usage before starting; For large maps, use tiling at first to save memory.
 
-   **Option 5**: *(Current)* The RANSAC method may have difficulties dealing with maps from different equipments(lidars). Need to fine-tune the distance parameters each time.
+### 5. **Superpoint transformer**:
 
-   **Option 5**: *(Current)* Use neural network to handel point cloud and feature extraction directly. For this project, the superpoint_transformer(https://github.com/drprojects/superpoint_transformer/tree/master) and pretrained models(https://zenodo.org/records/8042712) are used. If only limited GPU memory is availiable(RTX 4070 in this case), check memory usage before starting; For large maps, use tiling at first to save memory.
-
-   For pcd files, use CloudCompare to convert and set RGB color. Check the coordinate in original files, to align z-axis with correct direction, in CloudCompare:
+   Before using, check if point cloud files are in correct format. For pcd files, use CloudCompare to convert and set RGB color. Check the coordinate in original files, to align z-axis with correct direction, in CloudCompare:
 
    Go to Edit -> Apply Transformation. In the transformation matrix dialog, set the values to reflect a flip in the Z-axis. This matrix effectively flips the Z-axis direction:
    ```bash
@@ -157,7 +188,7 @@ pip install -e .
    property float blue
    ```
 
-5. **Launch File Transmitter**:
+### 6. **Launch File Transmitter**:
 
    ```bash
    source install/setup.bash
@@ -166,7 +197,7 @@ pip install -e .
    ```
    Now you can transmit files from robot to desktop. 
 
-6. **Launch Waypoint Publisher**:
+### 7. **Launch Waypoint Publisher**:
 
    ```bash
    source install/setup.bash
